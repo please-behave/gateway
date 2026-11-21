@@ -1,0 +1,9 @@
+{
+  "root": "dist",
+  "targets": {
+    "linux-amd64": [
+      "gateway.tar",
+      "metadata.json"
+    ]
+  }
+}
