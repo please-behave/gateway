@@ -1,0 +1,5 @@
+id: DEC-0003
+name: Proxy owns connection trust
+context: Deployments place a proxy in front of the gateway to terminate and establish trusted connections.
+decision: Trust decisions about incoming connections belong to the proxy in front of the gateway.
+rationale: Connection trust is deployment-specific and is best enforced at the network boundary.

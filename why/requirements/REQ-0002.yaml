@@ -1,0 +1,6 @@
+id: REQ-0002
+name: Bounded requests
+description: The gateway must enforce configurable upper bounds on request body size and request processing time.
+rationale: Bounded requests prevent one sender from consuming unbounded gateway capacity.
+decisions:
+  - DEC-0001

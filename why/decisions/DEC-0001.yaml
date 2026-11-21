@@ -1,0 +1,5 @@
+id: DEC-0001
+name: Gateway is the sender entry point
+context: Senders need one governed boundary before their requests enter the platform.
+decision: The gateway is the only entry point for sender traffic into Please Behave.
+rationale: A single entry point makes authentication, limiting, validation and forwarding enforceable in one place.

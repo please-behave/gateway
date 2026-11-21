@@ -1,17 +1,6 @@
-fn greeting() -> &'static str {
-    "Hello, World!"
-}
+use anyhow::Result;
 
-fn main() {
-    println!("{}", greeting());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::greeting;
-
-    #[test]
-    fn greets_the_world() {
-        assert_eq!(greeting(), "Hello, World!");
-    }
+#[tokio::main]
+async fn main() -> Result<()> {
+    gateway::run().await
 }

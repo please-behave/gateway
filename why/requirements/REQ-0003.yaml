@@ -1,0 +1,6 @@
+id: REQ-0003
+name: Credential-safe request logs
+description: The gateway must emit structured request logs with a request identifier and must not include authorization headers or credentials in any log line.
+rationale: Operators need request correlation without exposing credentials in operational records.
+decisions:
+  - DEC-0001

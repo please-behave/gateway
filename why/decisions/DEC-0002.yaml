@@ -1,0 +1,5 @@
+id: DEC-0002
+name: Gateway instances are stateless
+context: The gateway must scale and recover without coordinating request state between instances.
+decision: Gateway instances share no state and persist no data.
+rationale: Stateless instances can be replaced and scaled independently while the ledger owns durable history.
