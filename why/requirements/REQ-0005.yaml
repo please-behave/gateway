@@ -1,0 +1,12 @@
+id: REQ-0005
+name: Authenticate and rotate sender credentials
+description: >-
+  The gateway must authenticate the bearer key against configured hashes using
+  constant-time comparison, derive the sender from the matching label and
+  support overlapping active keys for rotation by addition and removal. The
+  keygen command must generate a random key, print it once with its configuration
+  entry and persist nothing. Serving requests must never echo credentials.
+rationale: Senders must be attributable and credentials must be replaceable without interrupting delivery.
+decisions:
+  - DEC-0004
+  - DEC-0005

@@ -1,0 +1,5 @@
+id: DEC-0004
+name: Authenticate senders with hashed API keys
+context: Automated senders need credentials that can be provisioned and rotated on independently running gateway instances.
+decision: Every gateway instance loads the same set of labeled SHA-256 hashes of randomly generated API keys. Authentication compares hashes in constant time.
+rationale: High-entropy keys and hash-only configuration allow independent verification and overlapping credentials during rotation.

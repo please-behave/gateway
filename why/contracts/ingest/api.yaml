@@ -1,0 +1,14 @@
+id: API-0001
+name: Public ingest
+version: 0
+contracts:
+  - id: CON-0001
+    name: Submit an attestation
+    document: attestation.md
+    schema: attestation.schema.json
+    requirements:
+      - REQ-0002
+      - REQ-0003
+      - REQ-0005
+      - REQ-0006
+      - REQ-0007

@@ -1,0 +1,5 @@
+id: DEC-0005
+name: The gateway assigns sender identity
+context: An attestation carries claims made by the holder of an authenticated key.
+decision: The gateway assigns the sender solely from the label associated with the authenticated key.
+rationale: Binding the sender to the authenticated credential keeps attribution independent of the attestation's claims.

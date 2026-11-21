@@ -16,6 +16,10 @@ use tower_http::{
     timeout::TimeoutLayer,
 };
 
+mod ingest;
+
+pub use ingest::{IngestConfig, keygen};
+
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
 const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 const DEFAULT_REQUEST_TIMEOUT_MS: usize = 30_000;
@@ -26,6 +30,7 @@ pub struct Config {
     pub ledger_url: String,
     pub max_body_bytes: usize,
     pub request_timeout: Duration,
+    pub ingest: IngestConfig,
 }
 
 impl Config {
@@ -45,27 +50,33 @@ impl Config {
             ledger_url,
             max_body_bytes,
             request_timeout: Duration::from_millis(request_timeout_ms as u64),
+            ingest: IngestConfig::from_env()?,
         })
     }
 }
 
 pub fn app(config: &Config) -> Router {
-    with_limits(
-        Router::new()
-            .route("/healthz", any(health))
-            .route("/readyz", any(health)),
+    let health_routes = Router::new()
+        .route("/healthz", any(health))
+        .route("/readyz", any(health))
+        .layer(RequestBodyLimitLayer::new(config.max_body_bytes));
+    with_request_middleware(health_routes.merge(ingest::routes(config)), config)
+}
+
+pub fn with_limits(router: Router, config: &Config) -> Router {
+    with_request_middleware(
+        router.layer(RequestBodyLimitLayer::new(config.max_body_bytes)),
         config,
     )
 }
 
-pub fn with_limits(router: Router, config: &Config) -> Router {
+fn with_request_middleware(router: Router, config: &Config) -> Router {
     router
         .layer(DefaultBodyLimit::disable())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             config.request_timeout,
         ))
-        .layer(RequestBodyLimitLayer::new(config.max_body_bytes))
         .layer(axum::middleware::from_fn(log_request))
 }
 

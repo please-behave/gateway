@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Attestation",
+  "description": "Evidence reported by an authenticated gateway sender.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository", "commit", "execution_points", "overall", "results"],
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 0, "maximum": 2147483647 },
+    "repository": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "commit": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "execution_points": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+    },
+    "overall": { "enum": ["PASS", "FAIL", "ERROR"] },
+    "results": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "status"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 512 },
+          "kind": { "enum": ["check", "review", "integrity"] },
+          "status": { "enum": ["PASS", "FAIL", "ERROR", "NOT_RUN", "WARN"] }
+        }
+      }
+    }
+  }
+}

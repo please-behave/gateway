@@ -2,6 +2,7 @@ FROM rust:1.100.0-slim-trixie AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY why/contracts/ingest/attestation.schema.json ./why/contracts/ingest/attestation.schema.json
 RUN cargo build --release --locked
 
 FROM gcr.io/distroless/cc-debian13:nonroot

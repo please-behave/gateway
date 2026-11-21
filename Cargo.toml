@@ -8,6 +8,10 @@ license = "PolyForm-Noncommercial-1.0.0"
 [dependencies]
 anyhow = "1.0.100"
 axum = "0.8.7"
+jsonschema = { version = "0.61.2", default-features = false }
+rand = { version = "0.9.2", default-features = false, features = ["os_rng"] }
+sha2 = "0.10.9"
+subtle = "2.6.1"
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tower-http = { version = "0.7.0", features = ["limit", "request-id", "timeout"] }
 tracing = "0.1.41"

@@ -1,0 +1,14 @@
+id: REQ-0007
+name: Accept bounded attestations through the public ingest contract
+description: >-
+  The gateway must authenticate, rate-limit, then check the request body size
+  and validate structure against the versioned public ingest contract. It must
+  return 401 for invalid authentication, 429 for requests above the rate limit,
+  413 for an oversized body and 400 for a malformed or schema-invalid body.
+  The schema must bound lengths and counts and reject unknown fields, including
+  a client-supplied sender. Only a valid request can proceed past these checks.
+rationale: Clients need actionable outcomes and downstream components need bounded, structurally valid evidence with trusted attribution.
+decisions:
+  - DEC-0001
+  - DEC-0005
+  - why:DEC-0002

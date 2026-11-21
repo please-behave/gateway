@@ -2,89 +2,11 @@
 
 mod support;
 
-use std::{
-    io::{Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
-    process::{Child, Stdio},
-    thread,
-    time::Duration,
-};
+use std::{thread, time::Duration};
 
 use axum::{Router, routing::get};
 use gateway::{Config, app, with_limits};
-
-fn unused_address() -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve a local port");
-    let address = listener.local_addr().expect("read reserved address");
-    drop(listener);
-    address
-}
-
-struct Gateway {
-    child: Child,
-    address: SocketAddr,
-}
-
-impl Gateway {
-    fn stop(mut self) -> String {
-        self.child.kill().expect("stop gateway");
-        self.child.wait().expect("wait for gateway");
-        let mut logs = String::new();
-        self.child
-            .stderr
-            .take()
-            .expect("capture gateway logs")
-            .read_to_string(&mut logs)
-            .expect("read gateway logs");
-        self.child
-            .stdout
-            .take()
-            .expect("capture gateway output")
-            .read_to_string(&mut logs)
-            .expect("read gateway output");
-        logs
-    }
-}
-
-impl Drop for Gateway {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn start_gateway(max_body_bytes: usize, timeout_ms: usize) -> Gateway {
-    let address = unused_address();
-    let mut child = support::command(env!("CARGO_BIN_EXE_gateway"))
-        .env("GATEWAY_BIND_ADDR", address.to_string())
-        .env("GATEWAY_LEDGER_URL", "http://ledger.test")
-        .env("GATEWAY_MAX_BODY_BYTES", max_body_bytes.to_string())
-        .env("GATEWAY_REQUEST_TIMEOUT_MS", timeout_ms.to_string())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start gateway");
-    for _ in 0..50 {
-        if TcpStream::connect(address).is_ok() {
-            return Gateway { child, address };
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-    panic!("gateway did not start at {address}");
-}
-
-fn request(address: SocketAddr, request: &str) -> String {
-    let mut stream = TcpStream::connect(address).expect("connect to gateway");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("set response deadline");
-    stream.write_all(request.as_bytes()).expect("send request");
-    let mut response = String::new();
-    stream.read_to_string(&mut response).expect("read response");
-    response
-}
+use support::http::{request, start_gateway, unused_address};
 
 #[test]
 fn rejects_invalid_configuration() {
@@ -117,7 +39,7 @@ fn rejects_invalid_configuration() {
 
 #[test]
 fn serves_health_and_refuses_unsupported_requests() {
-    let gateway = start_gateway(1024, 1000);
+    let gateway = start_gateway(1024, 1000, |_| {});
 
     let health = request(
         gateway.address,
@@ -152,7 +74,7 @@ fn serves_health_and_refuses_unsupported_requests() {
 #[test]
 fn enforces_request_body_limit_and_redacts_authorization() {
     let secret = "fixture-secret";
-    let gateway = start_gateway(3, 1000);
+    let gateway = start_gateway(3, 1000, |_| {});
     let health = request(
         gateway.address,
         &format!(
@@ -195,7 +117,7 @@ fn enforces_request_body_limit_and_redacts_authorization() {
 
 #[test]
 fn times_out_an_incomplete_request_body() {
-    let gateway = start_gateway(1024, 100);
+    let gateway = start_gateway(1024, 100, |_| {});
     let response = request(
         gateway.address,
         "GET /readyz HTTP/1.1\r\nHost: test\r\nContent-Length: 4\r\nConnection: close\r\n\r\na",
@@ -207,7 +129,7 @@ fn times_out_an_incomplete_request_body() {
 #[cfg(unix)]
 #[test]
 fn shuts_down_gracefully_on_sigterm() {
-    let mut gateway = start_gateway(1024, 1000);
+    let mut gateway = start_gateway(1024, 1000, |_| {});
     let signal = support::command("kill")
         .args(["-TERM", &gateway.child.id().to_string()])
         .status()
@@ -234,6 +156,7 @@ async fn enforces_request_timeout() {
         ledger_url: "http://ledger.test".to_owned(),
         max_body_bytes: 1024,
         request_timeout: Duration::from_millis(10),
+        ingest: Default::default(),
     };
     let router = with_limits(
         Router::new().route(
@@ -267,6 +190,7 @@ fn application_can_be_constructed_from_valid_configuration() {
         ledger_url: "https://ledger.test".to_owned(),
         max_body_bytes: 1024,
         request_timeout: Duration::from_secs(1),
+        ingest: Default::default(),
     };
     let _ = app(&config);
 }

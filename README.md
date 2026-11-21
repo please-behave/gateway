@@ -20,8 +20,16 @@ The gateway is configured through environment variables. It exits before serving
 | `GATEWAY_BIND_ADDR` | no | `0.0.0.0:8080` | Socket address on which to listen. |
 | `GATEWAY_MAX_BODY_BYTES` | no | `1048576` | Positive maximum request-body size in bytes. |
 | `GATEWAY_REQUEST_TIMEOUT_MS` | no | `30000` | Positive maximum request duration in milliseconds. |
+| `GATEWAY_API_KEYS` | no | empty | Comma-separated `<sender>:<SHA-256 hex hash>` entries. An empty value disables authenticated ingest. |
+| `GATEWAY_RATE_LIMIT_PER_MINUTE` | no | `60` | Positive request allowance per key and gateway instance. Each key's 60-second window starts with its first request after startup or after the previous window expires. |
 
-Later authentication key configuration will also use environment variables. The gateway writes structured JSON logs to standard error. For each request it generates an ID, logs it and returns it in the `X-Request-Id` response header. The logs omit request credentials.
+The gateway writes structured JSON logs to standard error. For each request it generates an ID, logs it and returns it in the `X-Request-Id` response header. The logs omit request credentials.
+
+## Attestation ingest
+
+Run `gateway keygen <sender>` to print a random bearer key once and the entry to add to `GATEWAY_API_KEYS`. A sender label can contain 1 to 128 ASCII letters, digits, dots, underscores or hyphens. Give the bearer key to the sender and deploy the same hash entries to every gateway instance. To rotate a key, add a new entry with the same label, switch the sender to the new key, then remove the old entry from all instances.
+
+Send an attestation to `POST /v0/attestations` with `Authorization: Bearer <key>`. A valid submission receives an empty `200 OK` response. The [ingest contract](why/contracts/ingest/attestation.md) defines the accepted document, request processing order and error statuses.
 
 ## Health endpoints
 
