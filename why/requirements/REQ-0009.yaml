@@ -1,0 +1,12 @@
+id: REQ-0009
+name: Report ledger outcomes to the sender
+description: >-
+  The gateway must return 201 with the ledger's attestation identifier after
+  confirmed creation, 503 when the ledger is unreachable or returns a server
+  error, 504 for a ledger timeout, and 502 for any unexpected ledger response.
+  For 502 responses it must log the failure without logging the document or
+  the ledger response body.
+rationale: Senders and operators need to distinguish confirmed creation, service outages, timeouts and contract mismatches.
+decisions:
+  - DEC-0001
+  - DEC-0006

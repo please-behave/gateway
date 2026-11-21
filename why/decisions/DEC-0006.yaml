@@ -1,0 +1,5 @@
+id: DEC-0006
+name: Convert validated attestations at the gateway
+context: The public ingest format and the ledger's canonical format have independently versioned contracts.
+decision: The gateway may convert a validated attestation into the ledger's canonical format in a step independent of authentication and validation.
+rationale: Keeping conversion at the boundary lets either format evolve while retaining the ledger's storage contract and the authenticated attribution.

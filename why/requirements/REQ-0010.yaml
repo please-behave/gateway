@@ -1,0 +1,12 @@
+id: REQ-0010
+name: Bound the ledger exchange
+description: >-
+  The gateway must limit connection establishment to five seconds or the
+  configured request timeout, whichever is shorter. The configured request
+  deadline must cover request processing and the entire ledger exchange,
+  including reading the creation receipt. Expiry before forwarding returns
+  408. A connection timeout or expiry during forwarding returns 504.
+rationale: A slow ledger must not hold gateway capacity indefinitely.
+decisions:
+  - DEC-0001
+  - DEC-0002

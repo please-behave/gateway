@@ -17,6 +17,7 @@ use tower_http::{
 };
 
 mod ingest;
+mod ledger;
 
 pub use ingest::{IngestConfig, keygen};
 
@@ -40,7 +41,7 @@ impl Config {
             .parse()
             .context("GATEWAY_BIND_ADDR must be a socket address, for example 0.0.0.0:8080")?;
         let ledger_url = required("GATEWAY_LEDGER_URL")?;
-        validate_ledger_url(&ledger_url)?;
+        parse_ledger_url(&ledger_url)?;
         let max_body_bytes = positive("GATEWAY_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)?;
         let request_timeout_ms =
             positive("GATEWAY_REQUEST_TIMEOUT_MS", DEFAULT_REQUEST_TIMEOUT_MS)?;
@@ -56,41 +57,54 @@ impl Config {
 }
 
 pub fn app(config: &Config) -> Router {
+    build_app(config).expect("valid gateway configuration and ledger client")
+}
+
+fn build_app(config: &Config) -> Result<Router> {
+    let ledger = ledger::Ledger::new(config)?;
     let health_routes = Router::new()
         .route("/healthz", any(health))
         .route("/readyz", any(health))
-        .layer(RequestBodyLimitLayer::new(config.max_body_bytes));
-    with_request_middleware(health_routes.merge(ingest::routes(config)), config)
+        .layer(RequestBodyLimitLayer::new(config.max_body_bytes))
+        .layer(request_timeout(config));
+    Ok(log_requests(
+        health_routes.merge(ingest::routes(config, ledger)),
+    ))
 }
 
 pub fn with_limits(router: Router, config: &Config) -> Router {
-    with_request_middleware(
-        router.layer(RequestBodyLimitLayer::new(config.max_body_bytes)),
-        config,
+    log_requests(
+        router
+            .layer(RequestBodyLimitLayer::new(config.max_body_bytes))
+            .layer(request_timeout(config)),
     )
 }
 
-fn with_request_middleware(router: Router, config: &Config) -> Router {
+fn request_timeout(config: &Config) -> TimeoutLayer {
+    TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, config.request_timeout)
+}
+
+fn log_requests(router: Router) -> Router {
     router
         .layer(DefaultBodyLimit::disable())
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            config.request_timeout,
-        ))
         .layer(axum::middleware::from_fn(log_request))
 }
 
 pub async fn run() -> Result<()> {
     init_logging();
     let config = Config::from_env()?;
+    let app = build_app(&config)?;
     #[cfg(unix)]
     let terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("failed to register the gateway shutdown signal")?;
     let listener = tokio::net::TcpListener::bind(config.bind_addr)
         .await
         .with_context(|| format!("failed to bind gateway to {}", config.bind_addr))?;
-    tracing::info!(address = %config.bind_addr, "gateway started");
-    axum::serve(listener, app(&config))
+    let address = listener
+        .local_addr()
+        .context("failed to read gateway address")?;
+    tracing::info!(%address, "gateway started");
+    axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(
             #[cfg(unix)]
             terminate,
@@ -178,7 +192,7 @@ fn positive(name: &str, default: usize) -> Result<usize> {
     Ok(parsed)
 }
 
-fn validate_ledger_url(value: &str) -> Result<()> {
+fn parse_ledger_url(value: &str) -> Result<reqwest::Url> {
     const INVALID_URL: &str =
         "GATEWAY_LEDGER_URL must be an absolute HTTP or HTTPS URL without user information";
     let uri = value.parse::<axum::http::Uri>().context(INVALID_URL)?;
@@ -191,5 +205,5 @@ fn validate_ledger_url(value: &str) -> Result<()> {
     {
         bail!(INVALID_URL);
     }
-    Ok(())
+    reqwest::Url::parse(value).map_err(|_| anyhow::anyhow!(INVALID_URL))
 }

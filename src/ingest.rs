@@ -20,9 +20,10 @@ use axum::{
 use rand::{TryRngCore, rngs::OsRng};
 use sha2::{Digest, Sha256};
 use subtle::{ConditionallySelectable, ConstantTimeEq};
-use tower_http::limit::RequestBodyLimitLayer;
+use tokio::time::{Instant as Deadline, timeout_at};
+use tower_http::{limit::RequestBodyLimitLayer, request_id::RequestId};
 
-use crate::{Config, optional, positive};
+use crate::{Config, ledger::Ledger, optional, positive};
 
 const SCHEMA: &[u8] = include_bytes!("../why/contracts/ingest/attestation.schema.json");
 const RATE_WINDOW: Duration = Duration::from_secs(60);
@@ -143,6 +144,14 @@ struct Ingest {
     keys: Vec<ActiveKey>,
     requests_per_minute: usize,
     validator: jsonschema::Validator,
+    ledger: Ledger,
+    request_timeout: Duration,
+}
+
+#[derive(Clone)]
+struct Admitted {
+    sender: SenderLabel,
+    deadline: Deadline,
 }
 
 struct ActiveKey {
@@ -205,7 +214,7 @@ fn bearer_key(headers: &HeaderMap) -> Option<&str> {
     .then_some(key)
 }
 
-pub(crate) fn routes(config: &Config) -> Router {
+pub(crate) fn routes(config: &Config, ledger: Ledger) -> Router {
     let Json(schema) = Json::from_bytes(SCHEMA).expect("bundled attestation schema is JSON");
     let validator =
         jsonschema::validator_for(&schema).expect("bundled attestation schema is valid");
@@ -222,6 +231,8 @@ pub(crate) fn routes(config: &Config) -> Router {
             .collect(),
         requests_per_minute: config.ingest.requests_per_minute,
         validator,
+        ledger,
+        request_timeout: config.request_timeout,
     });
 
     Router::new().route(
@@ -234,6 +245,7 @@ pub(crate) fn routes(config: &Config) -> Router {
 }
 
 async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Next) -> Response {
+    let deadline = Deadline::now() + state.request_timeout;
     let Some(active) = state.authenticate(request.headers()) else {
         return (StatusCode::UNAUTHORIZED, [(WWW_AUTHENTICATE, "Bearer")]).into_response();
     };
@@ -245,7 +257,10 @@ async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Nex
             .into_response();
     }
     request.headers_mut().remove(AUTHORIZATION);
-    request.extensions_mut().insert(active.key.sender.clone());
+    request.extensions_mut().insert(Admitted {
+        sender: active.key.sender.clone(),
+        deadline,
+    });
     let response = next.run(request).await;
     if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
@@ -253,13 +268,36 @@ async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Nex
     response
 }
 
-async fn attest(State(state): State<Arc<Ingest>>, request: Request) -> StatusCode {
-    let bytes = match Bytes::from_request(request, &()).await {
-        Ok(bytes) => bytes,
-        Err(error) => return error.status(),
+async fn attest(
+    State(state): State<Arc<Ingest>>,
+    axum::Extension(admitted): axum::Extension<Admitted>,
+    axum::Extension(request_id): axum::Extension<RequestId>,
+    request: Request,
+) -> Response {
+    let bytes = match timeout_at(admitted.deadline, Bytes::from_request(request, &())).await {
+        Ok(Ok(bytes)) => bytes,
+        Ok(Err(error)) => return error.status().into_response(),
+        Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
     };
-    match Json::from_bytes(&bytes) {
-        Ok(Json(attestation)) if state.validator.is_valid(&attestation) => StatusCode::OK,
-        _ => StatusCode::BAD_REQUEST,
+    let Ok(Json(attestation)) = Json::from_bytes(&bytes) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if !state.validator.is_valid(&attestation) {
+        return StatusCode::BAD_REQUEST.into_response();
     }
+    if Deadline::now() >= admitted.deadline {
+        return StatusCode::REQUEST_TIMEOUT.into_response();
+    }
+
+    let envelope = std::collections::BTreeMap::from([
+        ("sender", admitted.sender.0.to_string().into()),
+        ("attestation", canonical_attestation(attestation)),
+    ]);
+    let request = state.ledger.request().json(&envelope);
+    Ledger::deliver(request, admitted.deadline, &request_id).await
+}
+
+// The validated public document already has the ledger's canonical field layout.
+fn canonical_attestation<T>(attestation: T) -> T {
+    attestation
 }

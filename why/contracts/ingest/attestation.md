@@ -9,7 +9,7 @@ An attestation carries evidence reported by the authenticated sender. Its
 repository and verdict are claims made by the holder of the key. The gateway
 determines the sender from the configured label for that key.
 
-The gateway processes the request in this order. Responses have empty bodies.
+The gateway processes the request in this order. Error responses have empty bodies.
 
 1. Authenticate the key. A missing, malformed or unknown credential returns
    `401 Unauthorized` with a `WWW-Authenticate: Bearer` challenge.
@@ -20,7 +20,20 @@ The gateway processes the request in this order. Responses have empty bodies.
 3. Enforce the request body size limit and validate the JSON structure.
    An oversized body returns `413 Content Too Large`. Malformed JSON or a
    schema violation, including a client-supplied sender, returns
-   `400 Bad Request`.
+   `400 Bad Request`. If the request deadline expires before forwarding,
+   the gateway returns `408 Request Timeout`.
+4. Convert the valid attestation to the canonical ledger format and submit it
+   once with the authenticated sender. The conversion currently preserves the
+   attestation's fields and values.
 
-A structurally valid request returns `200 OK`. The gateway currently stops
-processing at this point. The configured request timeout also applies to ingest.
+| Status | Meaning |
+| --- | --- |
+| `201 Created` | The ledger confirmed creation. The JSON response contains the ledger's version 7 UUID in `id`. |
+| `503 Service Unavailable` | The ledger could not be reached or returned a server error. |
+| `504 Gateway Timeout` | The connection or ledger exchange exceeded its deadline, including receipt delivery. |
+| `502 Bad Gateway` | The ledger returned an unexpected response, such as `400` after gateway validation or `201` without a valid creation receipt. |
+
+The configured request deadline covers both inbound processing and the ledger
+exchange. Establishing a ledger connection is also capped at five seconds.
+For a `502`, the gateway logs the failure without the submitted document or
+the ledger response body.
