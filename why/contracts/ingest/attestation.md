@@ -37,3 +37,21 @@ The configured request deadline covers both inbound processing and the ledger
 exchange. Establishing a ledger connection is also capped at five seconds.
 For a `502`, the gateway logs the failure without the submitted document or
 the ledger response body.
+
+## Rule metadata
+
+Each result keeps its run-scoped `id` and may include a `rule` object with
+`source` (the normalized Git repository identity), `path` (the
+repository-relative rule directory) and `id` (the rule ID within that source),
+as defined by why:DEC-0010. All three are required when `rule` is present.
+The source and path are each bounded to 256 characters, and the rule ID to 128.
+
+An identity may also carry `version` and `digest`. These fields must appear
+together. A version is at most 64 characters and has the form `A.B`, where
+each part is a non-negative decimal integer with no leading zeros
+(why:DEC-0011). The digest is a string of at most 128 characters. All fields
+must be non-empty and contain no NUL characters. Unknown fields are rejected.
+
+This optional extension retains the existing API and document format versions.
+The gateway accepts attestations that omit `rule` and forwards supplied rule
+metadata unchanged in the canonical ledger envelope.

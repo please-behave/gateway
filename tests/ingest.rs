@@ -17,6 +17,8 @@ use support::http::{Gateway, request, start_gateway, unused_address};
 const FIRST_KEY: &str = "fixture-ingest-key-first";
 const SECOND_KEY: &str = "fixture-ingest-key-second";
 const VALID: &str = r#"{"schema_version":1,"repository":"github.com/example/project","commit":"0123456789abcdef","execution_points":["pre-push"],"overall":"PASS","results":[{"id":"test","kind":"check","status":"WARN"}]}"#;
+const RULE_IDENTITY: &str =
+    r#""source":"github.com/example/rules","path":"rules/verify","id":"verify""#;
 const RECEIPT: &str = r#"{"id":"0198b0a7-46a8-7000-8000-000000000001"}"#;
 
 fn entry(sender: &str, key: &str) -> String {
@@ -188,6 +190,76 @@ fn forwards_one_canonical_envelope_with_only_the_authenticated_sender() {
             .unwrap()
             .is_valid(&body)
     );
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+fn with_rule(rule: &str) -> String {
+    VALID.replace(
+        r#""status":"WARN""#,
+        &format!(r#""status":"WARN","rule":{rule}"#),
+    )
+}
+
+#[test]
+fn forwards_rule_identity_and_versioned_metadata_unchanged() {
+    let ledger = LedgerStub::reply(201, RECEIPT);
+    let gateway = start_with_ledger(&entry("build", FIRST_KEY), 2, 1024, 1000, ledger.address);
+    for rule in [
+        format!("{{{RULE_IDENTITY}}}"),
+        format!(r#"{{{RULE_IDENTITY},"version":"0.12","digest":"fixture-digest"}}"#),
+    ] {
+        let attestation = with_rule(&rule);
+        expect_status(&submit(&gateway, Some(FIRST_KEY), "", &attestation), 201);
+
+        let (_, body) = ledger.requests.try_recv().unwrap();
+        let expected = format!(r#"{{"const":{{"sender":"build","attestation":{attestation}}}}}"#);
+        let Json(expected) = Json::from_bytes(expected.as_bytes()).unwrap();
+        let Json(body) = Json::from_bytes(&body).unwrap();
+        assert!(
+            jsonschema::validator_for(&expected)
+                .unwrap()
+                .is_valid(&body)
+        );
+    }
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn rejects_invalid_rule_metadata_before_forwarding() {
+    let ledger = LedgerStub::reply(201, RECEIPT);
+    let gateway = start_with_ledger(&entry("build", FIRST_KEY), 20, 2048, 1000, ledger.address);
+    let oversized_source = "x".repeat(257);
+    let oversized_path = "x".repeat(257);
+    let oversized_id = "x".repeat(129);
+    let oversized_version_major = "1".repeat(63);
+    let oversized_digest = "x".repeat(129);
+
+    for rule in [
+        "null".into(),
+        r#"{"path":"rules/verify","id":"verify"}"#.into(),
+        format!(r#"{{{RULE_IDENTITY},"extra":"unknown"}}"#),
+        format!(r#"{{{RULE_IDENTITY},"version":"1.2"}}"#),
+        format!(r#"{{{RULE_IDENTITY},"digest":"fixture-digest"}}"#),
+        format!(r#"{{{RULE_IDENTITY},"version":"01.2","digest":"fixture-digest"}}"#),
+        format!(r#"{{{RULE_IDENTITY},"version":"1.2\n","digest":"fixture-digest"}}"#),
+        format!(
+            r#"{{{RULE_IDENTITY},"version":"{oversized_version_major}.0","digest":"fixture-digest"}}"#
+        ),
+        format!(r#"{{{RULE_IDENTITY},"version":"1.2","digest":"{oversized_digest}"}}"#),
+        format!(r#"{{{RULE_IDENTITY},"version":"1.2","digest":""}}"#),
+        format!(r#"{{{RULE_IDENTITY},"version":"1.2","digest":"fixture\u0000digest"}}"#),
+        format!(r#"{{"source":"{oversized_source}","path":"rules/verify","id":"verify"}}"#),
+        format!(
+            r#"{{"source":"github.com/example/rules","path":"{oversized_path}","id":"verify"}}"#
+        ),
+        format!(
+            r#"{{"source":"github.com/example/rules","path":"rules/verify","id":"{oversized_id}"}}"#
+        ),
+    ] {
+        let response = submit(&gateway, Some(FIRST_KEY), "", &with_rule(&rule));
+        assert!(response.starts_with("HTTP/1.1 400 "), "{rule}: {response}");
+        expect_status(&response, 400);
+    }
     assert!(ledger.requests.try_recv().is_err());
 }
 

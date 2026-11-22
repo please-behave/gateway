@@ -4,9 +4,10 @@ description: >-
   After admitting and validating a request, the gateway must convert the
   attestation to the canonical ledger format and send one JSON envelope with
   the authenticated sender to POST /v0/attestations at the configured ledger.
-  The current conversion preserves the attestation's fields and values. The
-  gateway must forward no other client data, must not persist the document,
-  and must not forward rejected requests, retry, or follow redirects.
+  The current conversion preserves the attestation's fields and values,
+  including rule metadata when supplied. The gateway must forward no other
+  client data, must not persist the document, and must not forward rejected
+  requests, retry, or follow redirects.
 rationale: The ledger receives bounded evidence with attribution established by the gateway.
 decisions:
   - DEC-0002

@@ -7,8 +7,13 @@ description: >-
   413 for an oversized body and 400 for a malformed or schema-invalid body.
   The schema must bound lengths and counts and reject unknown fields, including
   a client-supplied sender. Only a valid request can proceed past these checks.
+  Results may omit rule metadata. When present, it must contain the bounded
+  rule identity fields and either omit both version and digest or supply both
+  within the syntax and bounds of the canonical ledger format.
 rationale: Clients need actionable outcomes and downstream components need bounded, structurally valid evidence with trusted attribution.
 decisions:
   - DEC-0001
   - DEC-0005
   - why:DEC-0002
+  - why:DEC-0010
+  - why:DEC-0011
