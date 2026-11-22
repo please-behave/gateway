@@ -23,7 +23,12 @@ use subtle::{ConditionallySelectable, ConstantTimeEq};
 use tokio::time::{Instant as Deadline, timeout_at};
 use tower_http::{limit::RequestBodyLimitLayer, request_id::RequestId};
 
-use crate::{Config, ledger::Ledger, optional, positive};
+use crate::{
+    Config,
+    ledger::{AttestationReceipt, Ledger},
+    optional, positive,
+    registration::{self, RegistrationReceipt},
+};
 
 const SCHEMA: &[u8] = include_bytes!("../why/contracts/ingest/attestation.schema.json");
 const RATE_WINDOW: Duration = Duration::from_secs(60);
@@ -144,6 +149,7 @@ struct Ingest {
     keys: Vec<ActiveKey>,
     requests_per_minute: usize,
     validator: jsonschema::Validator,
+    registration_validator: jsonschema::Validator,
     ledger: Ledger,
     request_timeout: Duration,
 }
@@ -231,17 +237,30 @@ pub(crate) fn routes(config: &Config, ledger: Ledger) -> Router {
             .collect(),
         requests_per_minute: config.ingest.requests_per_minute,
         validator,
+        registration_validator: registration::validator(),
         ledger,
         request_timeout: config.request_timeout,
     });
 
-    Router::new().route(
-        "/v0/attestations",
-        post(attest)
-            .route_layer(RequestBodyLimitLayer::new(config.max_body_bytes))
-            .route_layer(middleware::from_fn_with_state(state.clone(), admit))
-            .with_state(state),
-    )
+    let admission = middleware::from_fn_with_state(state.clone(), admit);
+    Router::new()
+        .route(
+            "/v0/attestations",
+            post(attest)
+                .route_layer(RequestBodyLimitLayer::new(config.max_body_bytes))
+                .route_layer(admission.clone()),
+        )
+        .route(
+            "/v0/rule-registrations",
+            post(register)
+                .route_layer(RequestBodyLimitLayer::new(
+                    config
+                        .max_body_bytes
+                        .min(registration::MAX_LEDGER_BODY_BYTES),
+                ))
+                .route_layer(admission),
+        )
+        .with_state(state)
 }
 
 async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Next) -> Response {
@@ -274,10 +293,9 @@ async fn attest(
     axum::Extension(request_id): axum::Extension<RequestId>,
     request: Request,
 ) -> Response {
-    let bytes = match timeout_at(admitted.deadline, Bytes::from_request(request, &())).await {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(error)) => return error.status().into_response(),
-        Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
+    let bytes = match read_body(request, admitted.deadline).await {
+        Ok(bytes) => bytes,
+        Err(status) => return status.into_response(),
     };
     let Ok(Json(attestation)) = Json::from_bytes(&bytes) else {
         return StatusCode::BAD_REQUEST.into_response();
@@ -293,11 +311,46 @@ async fn attest(
         ("sender", admitted.sender.0.to_string().into()),
         ("attestation", canonical_attestation(attestation)),
     ]);
-    let request = state.ledger.request().json(&envelope);
-    Ledger::deliver(request, admitted.deadline, &request_id).await
+    let request = state.ledger.request::<AttestationReceipt>().json(&envelope);
+    Ledger::deliver(request, admitted.deadline, &request_id, AttestationReceipt).await
 }
 
 // The validated public document already has the ledger's canonical field layout.
 fn canonical_attestation<T>(attestation: T) -> T {
     attestation
+}
+
+async fn register(
+    State(state): State<Arc<Ingest>>,
+    axum::Extension(admitted): axum::Extension<Admitted>,
+    axum::Extension(request_id): axum::Extension<RequestId>,
+    request: Request,
+) -> Response {
+    let bytes = match read_body(request, admitted.deadline).await {
+        Ok(bytes) => bytes,
+        Err(status) => return status.into_response(),
+    };
+    let (body, receipt) =
+        match registration::envelope(&bytes, &state.registration_validator, &admitted.sender.0) {
+            Ok(envelope) => envelope,
+            Err(status) => return status.into_response(),
+        };
+    if Deadline::now() >= admitted.deadline {
+        return StatusCode::REQUEST_TIMEOUT.into_response();
+    }
+
+    let request = state
+        .ledger
+        .request::<RegistrationReceipt>()
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(body);
+    Ledger::deliver(request, admitted.deadline, &request_id, receipt).await
+}
+
+async fn read_body(request: Request, deadline: Deadline) -> Result<Bytes, StatusCode> {
+    match timeout_at(deadline, Bytes::from_request(request, &())).await {
+        Ok(Ok(bytes)) => Ok(bytes),
+        Ok(Err(error)) => Err(error.status()),
+        Err(_) => Err(StatusCode::REQUEST_TIMEOUT),
+    }
 }

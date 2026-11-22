@@ -1,0 +1,18 @@
+id: REQ-0011
+name: Validate public rule registration batches
+description: >-
+  The gateway must authenticate and rate-limit rule registration requests
+  before reading the body, using the same credentials and per-key allowance as
+  attestation ingest. It must enforce the registration contract's size and
+  structure bounds, reject client-supplied sender fields, and validate every
+  rule before forwarding any of the batch. Rule knowledge must include the
+  required fields defined by the CLI, and valid unfamiliar knowledge fields
+  must be preserved.
+rationale: Only bounded, attributable batches should reach the rule registry.
+decisions:
+  - DEC-0001
+  - DEC-0005
+  - why:DEC-0010
+  - why:DEC-0011
+  - why:DEC-0012
+  - why:DEC-0014

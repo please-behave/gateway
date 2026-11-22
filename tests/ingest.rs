@@ -1,4 +1,4 @@
-//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010
+//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010, REQ-0011, REQ-0012
 
 mod support;
 
@@ -11,6 +11,7 @@ use std::{
 };
 
 use axum::Json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use support::http::{Gateway, request, start_gateway, unused_address};
 
@@ -61,6 +62,22 @@ impl LedgerStub {
         before_headers: Duration,
         before_body: Duration,
     ) -> Self {
+        Self::serve(
+            status,
+            headers,
+            move || body.clone(),
+            before_headers,
+            before_body,
+        )
+    }
+
+    fn serve(
+        status: u16,
+        headers: String,
+        mut response_body: impl FnMut() -> String + Send + 'static,
+        before_headers: Duration,
+        before_body: Duration,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind stand-in ledger");
         let address = listener.local_addr().unwrap();
         let (sender, requests) = mpsc::channel();
@@ -94,6 +111,7 @@ impl LedgerStub {
                     .expect("read ledger envelope");
                 sender.send((headers_received, request_body)).unwrap();
                 thread::sleep(before_headers);
+                let body = response_body();
                 let response_headers = format!(
                     "HTTP/1.1 {status} Response\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{headers}\r\n",
                     body.len()
@@ -131,13 +149,17 @@ impl Drop for LedgerStub {
 }
 
 fn submit(gateway: &Gateway, key: Option<&str>, headers: &str, body: &str) -> String {
+    post(gateway, "/v0/attestations", key, headers, body)
+}
+
+fn post(gateway: &Gateway, path: &str, key: Option<&str>, headers: &str, body: &str) -> String {
     let auth = key
         .map(|key| format!("Authorization: Bearer {key}\r\n"))
         .unwrap_or_default();
     request(
         gateway.address,
         &format!(
-            "POST /v0/attestations HTTP/1.1\r\nHost: test\r\nConnection: close\r\n{auth}{headers}Content-Length: {}\r\n\r\n{body}",
+            "POST {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n{auth}{headers}Content-Length: {}\r\n\r\n{body}",
             body.len()
         ),
     )
@@ -628,4 +650,245 @@ fn keygen_emits_one_random_key_and_a_usable_hash_entry() {
         assert!(!invalid.status.success());
         assert!(invalid.stdout.is_empty());
     }
+}
+
+const REGISTRATION_PATH: &str = "/v0/rule-registrations";
+
+fn registration() -> Value {
+    json!({
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "rules": [{
+            "source": "github.com/example/rules",
+            "path": "rules/verify",
+            "id": "verify",
+            "version": "1.0",
+            "kind": "check",
+            "knowledge": {
+                "purpose": "Make the verification repeatable.",
+                "problem": "Ad hoc checks miss regressions.",
+                "value": "Changes can be checked consistently.",
+                "conditions": [{"statement": "Tests pass.", "rationale": "They cover the contract."}],
+                "placement": "All repositories use this policy.",
+                "extension": {"flag": true, "lines": ["one\r\ntwo"]}
+            }
+        }]
+    })
+}
+
+fn outcome(kind: &str, hex: &str) -> Value {
+    json!({"outcome": kind, "digest": format!("v1:sha256:{}", hex.repeat(64))})
+}
+
+#[test]
+fn forwards_the_complete_batch_and_returns_the_ordered_ledger_outcomes() {
+    let first = json!({"outcomes": [outcome("created", "1"), outcome("conflict", "2")]});
+    let repeated = json!({"outcomes": [outcome("unchanged", "1"), outcome("conflict", "2")]});
+    let mut replies = [first.to_string(), repeated.to_string()].into_iter();
+    let ledger = LedgerStub::serve(
+        200,
+        String::new(),
+        move || replies.next().unwrap(),
+        Duration::ZERO,
+        Duration::ZERO,
+    );
+    let gateway = start_with_ledger(&entry("build", FIRST_KEY), 2, 4096, 1000, ledger.address);
+
+    let mut batch = registration();
+    let mut review = batch["rules"][0].clone();
+    review["kind"] = json!("review");
+    review["path"] = json!(".");
+    review["id"] = json!("review");
+    review["blocking"] = json!(false);
+    review["prompt"] = json!("Review the change.");
+    batch["rules"].as_array_mut().unwrap().push(review);
+
+    let body = batch.to_string();
+    batch["sender"] = json!("build");
+    for expected in [first, repeated] {
+        let response = post(
+            &gateway,
+            REGISTRATION_PATH,
+            Some(FIRST_KEY),
+            "X-Sender: impersonator\r\n",
+            &body,
+        );
+        expect_status(&response, 200);
+        let receipt: Value =
+            serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(receipt, expected);
+
+        let (headers, forwarded) = ledger.requests.try_recv().unwrap();
+        assert_eq!(headers[0], "POST /v0/rule-registrations HTTP/1.1");
+        assert!(headers.iter().all(|header| !header.contains(FIRST_KEY)));
+        let forwarded: Value = serde_json::from_slice(&forwarded).unwrap();
+        assert_eq!(forwarded, batch);
+    }
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn registrations_use_the_same_authentication_rate_allowance_and_body_limit() {
+    let ledger = LedgerStub::reply(201, RECEIPT);
+    let body = registration().to_string();
+    let oversized = "x".repeat(body.len() + 1);
+    let gateway = start_with_ledger(
+        &entry("build", FIRST_KEY),
+        3,
+        body.len(),
+        1000,
+        ledger.address,
+    );
+    let register = |key, body| post(&gateway, REGISTRATION_PATH, key, "", body);
+
+    let missing = register(None, &oversized);
+    expect_status(&missing, 401);
+    assert!(missing.contains("\r\nwww-authenticate: Bearer\r\n"));
+    expect_status(&register(Some(SECOND_KEY), "{"), 401);
+    expect_status(&register(Some(FIRST_KEY), &oversized), 413);
+    expect_status(&register(Some(FIRST_KEY), "{"), 400);
+    expect_status(&submit(&gateway, Some(FIRST_KEY), "", VALID), 201);
+    let limited = register(Some(FIRST_KEY), &body);
+    expect_status(&limited, 429);
+    assert!(limited.contains("\r\nretry-after: "));
+    assert!(ledger.requests.try_recv().is_ok());
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn rejects_the_entire_registration_batch_on_an_invalid_rule_or_envelope() {
+    let ledger = LedgerStub::reply(500, "");
+    let gateway = start_with_ledger(
+        &entry("build", FIRST_KEY),
+        40,
+        256 * 1024,
+        1000,
+        ledger.address,
+    );
+    let valid = registration();
+    let mut sender = valid.clone();
+    sender["sender"] = json!("impersonator");
+    let mut bad_commit = valid.clone();
+    bad_commit["commit"] = json!("abcdef");
+    let mut empty = valid.clone();
+    empty["rules"] = json!([]);
+    let mut too_many = valid.clone();
+    too_many["rules"] = json!(vec![valid["rules"][0].clone(); 101]);
+    let mut missing_knowledge = valid.clone();
+    missing_knowledge["rules"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("knowledge");
+    let mut missing_placement = valid.clone();
+    missing_placement["rules"][0]["knowledge"]
+        .as_object_mut()
+        .unwrap()
+        .remove("placement");
+
+    let mut invalid = [
+        sender,
+        bad_commit,
+        empty,
+        too_many,
+        missing_knowledge,
+        missing_placement,
+    ]
+    .map(|value| value.to_string())
+    .to_vec();
+    invalid.extend([
+        valid
+            .to_string()
+            .replace(r#""version":"1.0""#, r#""version":"1.0","version":"1.0""#),
+        valid
+            .to_string()
+            .replace(r#""flag":true"#, r#""line\r\n":true,"line\n":false"#),
+    ]);
+    for (field, value) in [
+        ("sender", json!("impersonator")),
+        ("source", json!("https://github.com/example/rules")),
+        ("source", json!("github.com:443/example/rules")),
+        ("path", json!("rules/../verify")),
+        ("id", json!("bad/id")),
+        ("version", json!("01.0")),
+        ("version", json!("1.0\n")),
+        ("kind", json!("other")),
+        ("kind", json!("review")),
+        ("blocking", json!(false)),
+        ("prompt", json!("check prompt")),
+        ("name", json!("é".repeat(81))),
+        ("description", json!("x".repeat(65537))),
+        ("knowledge", json!({"purpose": "incomplete"})),
+    ] {
+        let mut batch = valid.clone();
+        let mut bad_rule = batch["rules"][0].clone();
+        bad_rule[field] = value;
+        batch["rules"].as_array_mut().unwrap().push(bad_rule);
+        invalid.push(batch.to_string());
+    }
+    let mut long_knowledge = valid.clone();
+    long_knowledge["rules"][0]["knowledge"]["extension"] = json!("x".repeat(65537));
+    invalid.push(long_knowledge.to_string());
+
+    for body in invalid {
+        expect_status(
+            &post(&gateway, REGISTRATION_PATH, Some(FIRST_KEY), "", &body),
+            400,
+        );
+    }
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn maps_registration_ledger_failures_and_rejects_invalid_receipts() {
+    let body = registration().to_string();
+    let valid_outcomes = json!({"outcomes": [outcome("created", "a")]}).to_string();
+    for (status, receipt, expected) in [
+        (500, "upstream diagnostic".into(), 503),
+        (400, "upstream diagnostic".into(), 502),
+        (201, valid_outcomes.clone(), 502),
+        (200, "upstream diagnostic".into(), 502),
+        (200, r#"{"outcomes":[]}"#.into(), 502),
+        (
+            200,
+            json!({"outcomes": [outcome("unexpected", "a")]}).to_string(),
+            502,
+        ),
+        (
+            200,
+            json!({"outcomes": [outcome("created", "A")]}).to_string(),
+            502,
+        ),
+        (200, format!("{valid_outcomes:>17000}"), 502),
+    ] {
+        let ledger = LedgerStub::reply(status, &receipt);
+        let gateway = start_with_ledger(&entry("build", FIRST_KEY), 1, 4096, 1000, ledger.address);
+        expect_status(
+            &post(&gateway, REGISTRATION_PATH, Some(FIRST_KEY), "", &body),
+            expected,
+        );
+        let logs = gateway.stop();
+        assert!(!logs.contains("upstream diagnostic"));
+        assert!(!logs.contains("github.com/example/rules"));
+        assert!(ledger.requests.try_recv().is_ok());
+        assert!(ledger.requests.try_recv().is_err());
+    }
+
+    let gateway = start_ingest(&entry("build", FIRST_KEY), 1, 4096);
+    expect_status(
+        &post(&gateway, REGISTRATION_PATH, Some(FIRST_KEY), "", &body),
+        503,
+    );
+
+    let ledger = LedgerStub::start(
+        200,
+        String::new(),
+        valid_outcomes,
+        Duration::ZERO,
+        Duration::from_millis(400),
+    );
+    let gateway = start_with_ledger(&entry("build", FIRST_KEY), 1, 4096, 150, ledger.address);
+    expect_status(
+        &post(&gateway, REGISTRATION_PATH, Some(FIRST_KEY), "", &body),
+        504,
+    );
+    assert!(ledger.requests.try_recv().is_ok());
 }

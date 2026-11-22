@@ -18,6 +18,7 @@ use tower_http::{
 
 mod ingest;
 mod ledger;
+mod registration;
 
 pub use ingest::{IngestConfig, keygen};
 

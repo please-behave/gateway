@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Submit rule registrations",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["commit", "rules"],
+  "properties": {
+    "commit": {
+      "type": "string",
+      "pattern": "^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})(?![\\s\\S])"
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/rule" }
+    }
+  },
+  "$defs": {
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "path", "id", "version", "kind", "knowledge"],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/text",
+          "maxLength": 256,
+          "pattern": "^[^/@\\s]+/[^/\\\\\\u0000-\\u001f\\u007f]",
+          "not": { "pattern": "(\\.git|/)(?![\\s\\S])|[\\u0000-\\u001f\\u007f-\\u009f]" }
+        },
+        "path": {
+          "$ref": "#/$defs/text",
+          "minLength": 1,
+          "maxLength": 256,
+          "anyOf": [
+            { "const": "." },
+            {
+              "not": {
+                "pattern": "^[/\\\\]|^[A-Za-z]:|//|/(?![\\s\\S])|(^|/)\\.{1,2}(/|(?![\\s\\S]))"
+              }
+            }
+          ]
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?![\\s\\S])"
+        },
+        "kind": { "enum": ["check", "review"] },
+        "name": { "$ref": "#/$defs/text", "maxLength": 80 },
+        "description": { "$ref": "#/$defs/text", "maxLength": 65536 },
+        "blocking": { "type": "boolean" },
+        "prompt": { "$ref": "#/$defs/text", "maxLength": 32768 },
+        "knowledge": { "$ref": "#/$defs/knowledge" }
+      },
+      "if": { "properties": { "kind": { "const": "review" } } },
+      "then": { "required": ["blocking", "prompt"] },
+      "else": { "not": { "anyOf": [{ "required": ["blocking"] }, { "required": ["prompt"] }] } }
+    },
+    "text": { "type": "string", "not": { "pattern": "\\u0000" } },
+    "knowledgeText": { "$ref": "#/$defs/text", "minLength": 1, "maxLength": 65536 },
+    "knowledgeList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/knowledgeText" }
+    },
+    "knowledge": {
+      "$ref": "#/$defs/knowledgeObject",
+      "required": ["purpose", "problem", "value", "conditions", "placement"],
+      "properties": {
+        "purpose": { "$ref": "#/$defs/knowledgeText" },
+        "problem": { "$ref": "#/$defs/knowledgeText" },
+        "value": { "$ref": "#/$defs/knowledgeText" },
+        "placement": { "$ref": "#/$defs/knowledgeText" },
+        "blocking_rationale": { "$ref": "#/$defs/knowledgeText" },
+        "conditions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["statement", "rationale"],
+            "properties": {
+              "statement": { "$ref": "#/$defs/knowledgeText" },
+              "rationale": { "$ref": "#/$defs/knowledgeText" }
+            }
+          }
+        },
+        "exceptions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["description", "rationale"],
+            "properties": {
+              "description": { "$ref": "#/$defs/knowledgeText" },
+              "rationale": { "$ref": "#/$defs/knowledgeText" }
+            }
+          }
+        },
+        "out_of_scope": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": ["description"],
+            "properties": {
+              "description": { "$ref": "#/$defs/knowledgeText" },
+              "owner": { "type": "string", "maxLength": 80, "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])" }
+            }
+          }
+        },
+        "success_criteria": { "$ref": "#/$defs/knowledgeList" },
+        "limitations": { "$ref": "#/$defs/knowledgeList" },
+        "references": { "$ref": "#/$defs/knowledgeList" },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/knowledgeText" }
+        }
+      }
+    },
+    "knowledgeObject": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": { "$ref": "#/$defs/text", "maxLength": 256 },
+      "additionalProperties": { "$ref": "#/$defs/knowledgeValue" }
+    },
+    "knowledgeValue": {
+      "anyOf": [
+        { "$ref": "#/$defs/text", "maxLength": 65536 },
+        { "type": "boolean" },
+        { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/knowledgeValue" } },
+        { "$ref": "#/$defs/knowledgeObject" }
+      ]
+    }
+  }
+}

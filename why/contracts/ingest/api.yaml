@@ -15,3 +15,15 @@ contracts:
       - REQ-0008
       - REQ-0009
       - REQ-0010
+  - id: CON-0002
+    name: Submit rule registrations
+    document: rule-registration.md
+    schema: rule-registration.schema.json
+    requirements:
+      - REQ-0002
+      - REQ-0003
+      - REQ-0005
+      - REQ-0006
+      - REQ-0010
+      - REQ-0011
+      - REQ-0012
