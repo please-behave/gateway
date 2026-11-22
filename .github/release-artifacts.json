@@ -2,8 +2,10 @@
   "root": "dist",
   "targets": {
     "linux-amd64": [
-      "gateway.tar",
-      "metadata.json"
+      "gateway-linux-amd64.tar"
+    ],
+    "linux-arm64": [
+      "gateway-linux-arm64.tar"
     ]
   }
 }
