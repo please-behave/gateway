@@ -1,0 +1,6 @@
+repository:
+  alias: gateway
+  source: github:please-behave/gateway
+linked:
+  - alias: why
+    source: github:please-behave/why
