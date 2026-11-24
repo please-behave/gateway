@@ -1,0 +1,18 @@
+id: DEC-0007
+name: Bind GitHub OIDC senders to their repositories
+context: >-
+  GitHub Actions can prove the repository in which a workflow runs.
+  A rule version registration records durable provenance and must come from
+  the repository that owns the rule.
+decision: >-
+  Accept GitHub OIDC alongside hashed API keys. The verified repository claim
+  supplies the sender as github.com/<owner>/<name> in lowercase. A GitHub OIDC
+  sender owns its rule registrations and may publish attestations for its own
+  repository. Write access to an allowed repository is authority to register
+  versions for that source. API key senders use the configured key label
+  and retain their existing permissions.
+rationale: >-
+  The source repository can publish directly from its CI without a shared
+  secret, and the gateway verifies the provenance before forwarding to the ledger.
+supersedes:
+  - DEC-0005

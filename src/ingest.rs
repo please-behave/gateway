@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fmt::{self, Write},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -25,6 +26,7 @@ use tower_http::{limit::RequestBodyLimitLayer, request_id::RequestId};
 
 use crate::{
     Config,
+    github_oidc::{self, AuthenticationError, GitHubOidc, GitHubOidcConfig},
     ledger::{AttestationReceipt, Ledger},
     optional, positive,
     registration::{self, RegistrationReceipt},
@@ -37,6 +39,7 @@ const DEFAULT_REQUESTS_PER_MINUTE: usize = 60;
 #[derive(Clone)]
 pub struct IngestConfig {
     keys: Vec<ApiKey>,
+    github_oidc: Option<GitHubOidcConfig>,
     requests_per_minute: usize,
 }
 
@@ -44,6 +47,7 @@ impl Default for IngestConfig {
     fn default() -> Self {
         Self {
             keys: Vec::new(),
+            github_oidc: None,
             requests_per_minute: DEFAULT_REQUESTS_PER_MINUTE,
         }
     }
@@ -54,6 +58,7 @@ impl fmt::Debug for IngestConfig {
         formatter
             .debug_struct("IngestConfig")
             .field("key_count", &self.keys.len())
+            .field("github_oidc_enabled", &self.github_oidc.is_some())
             .field("requests_per_minute", &self.requests_per_minute)
             .finish()
     }
@@ -71,8 +76,22 @@ impl IngestConfig {
             positive("GATEWAY_RATE_LIMIT_PER_MINUTE", DEFAULT_REQUESTS_PER_MINUTE)?;
         Ok(Self {
             keys,
+            github_oidc: GitHubOidcConfig::from_env()?,
             requests_per_minute,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests(entries: &str, requests_per_minute: usize) -> Self {
+        Self {
+            keys: parse_keys(entries).expect("valid fixture API keys"),
+            requests_per_minute,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn github_oidc(&self) -> Result<Option<GitHubOidc>> {
+        self.github_oidc.clone().map(GitHubOidc::new).transpose()
     }
 }
 
@@ -147,6 +166,8 @@ pub fn keygen(label: &str) -> Result<()> {
 
 struct Ingest {
     keys: Vec<ActiveKey>,
+    github_oidc: Option<GitHubOidc>,
+    repository_windows: Mutex<RepositoryWindows>,
     requests_per_minute: usize,
     validator: jsonschema::Validator,
     registration_validator: jsonschema::Validator,
@@ -156,8 +177,15 @@ struct Ingest {
 
 #[derive(Clone)]
 struct Admitted {
-    sender: SenderLabel,
+    sender: Arc<str>,
+    github_oidc: bool,
     deadline: Deadline,
+}
+
+impl Admitted {
+    fn required_repository(&self) -> Option<&str> {
+        self.github_oidc.then_some(&self.sender)
+    }
 }
 
 struct ActiveKey {
@@ -170,33 +198,53 @@ struct RateWindow {
     used: usize,
 }
 
-impl ActiveKey {
-    fn admit(&self, allowance: usize) -> Result<(), u64> {
-        let mut window = self.window.lock().expect("rate-limit counter is available");
-        let now = Instant::now();
-        let window = window.get_or_insert(RateWindow {
+impl RateWindow {
+    fn new(now: Instant) -> Self {
+        Self {
             start: now,
             used: 0,
-        });
-        let elapsed = now.duration_since(window.start);
-        if elapsed >= RATE_WINDOW {
-            *window = RateWindow {
-                start: now,
-                used: 0,
-            };
         }
-        if window.used >= allowance {
+    }
+
+    fn admit(&mut self, allowance: usize, now: Instant) -> Result<(), u64> {
+        let mut elapsed = now.duration_since(self.start);
+        if elapsed >= RATE_WINDOW {
+            *self = Self::new(now);
+            elapsed = Duration::ZERO;
+        }
+        if self.used >= allowance {
             let remaining = RATE_WINDOW - elapsed;
             return Err(remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0));
         }
-        window.used += 1;
+        self.used += 1;
         Ok(())
     }
 }
 
+#[derive(Default)]
+struct RepositoryWindows {
+    windows: HashMap<Arc<str>, RateWindow>,
+    next_cleanup: Option<Instant>,
+}
+
+impl RepositoryWindows {
+    fn admit(&mut self, sender: &Arc<str>, allowance: usize) -> Result<(), u64> {
+        let now = Instant::now();
+        if self.next_cleanup.is_none_or(|cleanup| now >= cleanup) {
+            self.windows
+                .retain(|_, window| now.duration_since(window.start) < RATE_WINDOW);
+            self.next_cleanup = Some(now + RATE_WINDOW);
+        }
+        self.windows
+            .entry(Arc::clone(sender))
+            .or_insert_with(|| RateWindow::new(now))
+            .admit(allowance, now)
+    }
+}
+
 impl Ingest {
-    fn authenticate(&self, headers: &HeaderMap) -> Option<&ActiveKey> {
-        let hash = Sha256::digest(bearer_key(headers)?.as_bytes());
+    fn authenticate(&self, credential: &str) -> Option<&ActiveKey> {
+        let hash = Sha256::digest(credential.as_bytes());
         let hash: [u8; 32] = hash.into();
         // Scan every configured digest and select the matching slot without an
         // early return or a branch on each comparison.
@@ -220,7 +268,7 @@ fn bearer_key(headers: &HeaderMap) -> Option<&str> {
     .then_some(key)
 }
 
-pub(crate) fn routes(config: &Config, ledger: Ledger) -> Router {
+pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHubOidc>) -> Router {
     let Json(schema) = Json::from_bytes(SCHEMA).expect("bundled attestation schema is JSON");
     let validator =
         jsonschema::validator_for(&schema).expect("bundled attestation schema is valid");
@@ -235,6 +283,8 @@ pub(crate) fn routes(config: &Config, ledger: Ledger) -> Router {
                 window: Mutex::new(None),
             })
             .collect(),
+        github_oidc,
+        repository_windows: Mutex::default(),
         requests_per_minute: config.ingest.requests_per_minute,
         validator,
         registration_validator: registration::validator(),
@@ -265,10 +315,40 @@ pub(crate) fn routes(config: &Config, ledger: Ledger) -> Router {
 
 async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Next) -> Response {
     let deadline = Deadline::now() + state.request_timeout;
-    let Some(active) = state.authenticate(request.headers()) else {
-        return (StatusCode::UNAUTHORIZED, [(WWW_AUTHENTICATE, "Bearer")]).into_response();
+    let Some(credential) = bearer_key(request.headers()) else {
+        return unauthorized();
     };
-    if let Err(seconds) = active.admit(state.requests_per_minute) {
+    let (sender, github_oidc, allowance) = if let Some(oidc) = &state.github_oidc
+        && github_oidc::is_compact_token(credential)
+    {
+        let sender = match oidc.authenticate(credential, deadline).await {
+            Ok(sender) => Arc::from(sender),
+            Err(AuthenticationError::Unauthorized) => return unauthorized(),
+            Err(AuthenticationError::SigningKeysUnavailable) => {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
+        };
+        let allowance = state
+            .repository_windows
+            .lock()
+            .expect("repository rate-limit counters are available")
+            .admit(&sender, state.requests_per_minute);
+        (sender, true, allowance)
+    } else {
+        let Some(active) = state.authenticate(credential) else {
+            return unauthorized();
+        };
+        let mut window = active
+            .window
+            .lock()
+            .expect("rate-limit counter is available");
+        let now = Instant::now();
+        let allowance = window
+            .get_or_insert_with(|| RateWindow::new(now))
+            .admit(state.requests_per_minute, now);
+        (Arc::clone(&active.key.sender.0), false, allowance)
+    };
+    if let Err(seconds) = allowance {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [(RETRY_AFTER, seconds.to_string())],
@@ -277,7 +357,8 @@ async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Nex
     }
     request.headers_mut().remove(AUTHORIZATION);
     request.extensions_mut().insert(Admitted {
-        sender: active.key.sender.clone(),
+        sender,
+        github_oidc,
         deadline,
     });
     let response = next.run(request).await;
@@ -285,6 +366,10 @@ async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Nex
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     }
     response
+}
+
+fn unauthorized() -> Response {
+    (StatusCode::UNAUTHORIZED, [(WWW_AUTHENTICATE, "Bearer")]).into_response()
 }
 
 async fn attest(
@@ -297,18 +382,23 @@ async fn attest(
         Ok(bytes) => bytes,
         Err(status) => return status.into_response(),
     };
-    let Ok(Json(attestation)) = Json::from_bytes(&bytes) else {
+    let Ok(Json::<serde_json::Value>(attestation)) = Json::from_bytes(&bytes) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
     if !state.validator.is_valid(&attestation) {
         return StatusCode::BAD_REQUEST.into_response();
+    }
+    if let Some(repository) = admitted.required_repository()
+        && attestation["repository"].as_str() != Some(repository)
+    {
+        return StatusCode::FORBIDDEN.into_response();
     }
     if Deadline::now() >= admitted.deadline {
         return StatusCode::REQUEST_TIMEOUT.into_response();
     }
 
     let envelope = std::collections::BTreeMap::from([
-        ("sender", admitted.sender.0.to_string().into()),
+        ("sender", admitted.sender.to_string().into()),
         ("attestation", canonical_attestation(attestation)),
     ]);
     let request = state.ledger.request::<AttestationReceipt>().json(&envelope);
@@ -330,11 +420,15 @@ async fn register(
         Ok(bytes) => bytes,
         Err(status) => return status.into_response(),
     };
-    let (body, receipt) =
-        match registration::envelope(&bytes, &state.registration_validator, &admitted.sender.0) {
-            Ok(envelope) => envelope,
-            Err(status) => return status.into_response(),
-        };
+    let (body, receipt) = match registration::envelope(
+        &bytes,
+        &state.registration_validator,
+        &admitted.sender,
+        admitted.required_repository(),
+    ) {
+        Ok(envelope) => envelope,
+        Err(status) => return status.into_response(),
+    };
     if Deadline::now() >= admitted.deadline {
         return StatusCode::REQUEST_TIMEOUT.into_response();
     }

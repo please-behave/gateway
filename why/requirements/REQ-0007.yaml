@@ -13,7 +13,7 @@ description: >-
 rationale: Clients need actionable outcomes and downstream components need bounded, structurally valid evidence with trusted attribution.
 decisions:
   - DEC-0001
-  - DEC-0005
+  - DEC-0007
   - why:DEC-0002
   - why:DEC-0010
   - why:DEC-0011

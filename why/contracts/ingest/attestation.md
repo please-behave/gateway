@@ -1,19 +1,23 @@
 # Submit an attestation
 
 Send a JSON document matching [the attestation schema](attestation.schema.json)
-to `POST /v0/attestations` with `Authorization: Bearer <key>`. Version 0
+to `POST /v0/attestations` with `Authorization: Bearer <credential>`. Version 0
 is experimental and may change incompatibly. The URL version identifies the
 API and the document's `schema_version` identifies the reported format.
 
-An attestation carries evidence reported by the authenticated sender. Its
-repository and verdict are claims made by the holder of the key. The gateway
-determines the sender from the configured label for that key.
+An attestation carries evidence reported by the authenticated sender. The
+gateway assigns the sender from the API key label or the verified GitHub OIDC
+repository, normalized to lowercase as `github.com/<owner>/<name>`.
 
 The gateway processes the request in this order. Error responses have empty bodies.
 
-1. Authenticate the key. A missing, malformed or unknown credential returns
-   `401 Unauthorized` with a `WWW-Authenticate: Bearer` challenge.
-2. Apply the per-key, per-instance rate limit. Every admitted request consumes
+1. Authenticate the bearer credential using the configured API key or GitHub
+   OIDC method. A missing or invalid credential, including a GitHub OIDC token
+   for a repository outside the allowlist, returns `401 Unauthorized` with a
+   `WWW-Authenticate: Bearer` challenge. An unavailable signing-key fetch
+   needed for GitHub OIDC returns `503 Service Unavailable`.
+2. Apply the per-instance rate limit for the API key or GitHub OIDC repository.
+   Every admitted request consumes
    one slot, including requests with invalid or oversized bodies. An exhausted
    allowance returns `429 Too Many Requests` with `Retry-After` in whole
    seconds, rounded up to the next second when necessary.
@@ -22,7 +26,9 @@ The gateway processes the request in this order. Error responses have empty bodi
    schema violation, including a client-supplied sender, returns
    `400 Bad Request`. If the request deadline expires before forwarding,
    the gateway returns `408 Request Timeout`.
-4. Convert the valid attestation to the canonical ledger format and submit it
+4. For GitHub OIDC, require the validated `repository` to equal the sender.
+   A mismatch returns `403 Forbidden`. API keys can attest for any repository.
+5. Convert the valid attestation to the canonical ledger format and submit it
    once with the authenticated sender. The conversion currently preserves the
    attestation's fields and values.
 

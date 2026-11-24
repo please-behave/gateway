@@ -9,11 +9,11 @@
 
 ## Boundaries
 
-- The gateway shares no state between instances and stores nothing. In-memory counters of one instance are its only state.
+- The gateway shares no state between instances and stores nothing. Counters and the GitHub OIDC signing-key cache live only in the memory of one instance.
 - Trust decisions belong to the proxy in front of it. Never read a client address and never rely on a forwarded header.
 - Never log or echo credentials, including the `Authorization` header and API keys. Keep keys only as hashes and compare them in constant time.
 - Validate structure and format, including bounds, before anything is forwarded.
-- Never forward a sender that the client supplied. The sender comes from the authenticated key.
+- Never forward a sender that the client supplied. Derive the sender from the authenticated API key label or verified GitHub OIDC repository.
 
 ## GitHub issues
 

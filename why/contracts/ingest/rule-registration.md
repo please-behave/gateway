@@ -1,7 +1,7 @@
 # Submit rule registrations
 
 Send JSON matching the [request schema](rule-registration.schema.json) to
-`POST /v0/rule-registrations` with `Authorization: Bearer <key>`. The
+`POST /v0/rule-registrations` with `Authorization: Bearer <credential>`. The
 `commit` is the Git object ID of the registering revision. Rules are identified
 by normalized Git host and path, repository-relative rule directory (`.` for
 the root), source-local ID and owner-assigned version (why:DEC-0010 and
@@ -15,9 +15,13 @@ knowledge fields that fit the ledger's digest data types. Text limits in the
 schema count Unicode characters. Duplicate object members are rejected,
 including keys that would collide under the ledger's newline normalization.
 
-The gateway authenticates, rate-limits, checks the body size and validates the
-whole batch in that order. Both public ingest endpoints share each key's
-per-instance rate allowance. The public body limit is the lower of
+The gateway authenticates using an API key or GitHub OIDC, applies the
+per-instance rate limit for the key or GitHub OIDC repository, checks the body
+size and validates the whole batch in that order. Both public ingest endpoints
+share the allowance for that identity. For GitHub OIDC the sender is the
+verified repository, normalized to lowercase as `github.com/<owner>/<name>`.
+Every rule's `source` must equal that sender before any rule is forwarded.
+API keys can register rules from any source. The public body limit is the lower of
 `GATEWAY_MAX_BODY_BYTES` and 2 MiB. The serialized ledger request, including
 the authenticated sender, must also fit the ledger's 2 MiB limit.
 
@@ -33,11 +37,12 @@ Error bodies are empty.
 
 | Status | Meaning |
 | --- | --- |
-| `401 Unauthorized` | The bearer credential is missing, malformed or unknown. The response includes `WWW-Authenticate: Bearer`. |
-| `429 Too Many Requests` | The key's allowance is exhausted. The response includes `Retry-After` in whole seconds, rounded up. |
+| `401 Unauthorized` | The bearer credential is missing or invalid, or its GitHub OIDC repository is outside the allowlist. The response includes `WWW-Authenticate: Bearer`. |
+| `429 Too Many Requests` | The API key or GitHub OIDC repository has exhausted its allowance. The response includes `Retry-After` in whole seconds, rounded up. |
 | `413 Content Too Large` | The public body or the serialized ledger request exceeds its limit. |
 | `400 Bad Request` | The JSON is malformed or violates the contract, including a client-supplied `sender`. |
+| `403 Forbidden` | A rule source differs from the authenticated GitHub OIDC sender. |
 | `408 Request Timeout` | The request deadline expired before forwarding. |
-| `503 Service Unavailable` | The ledger could not be reached or returned a server error. |
+| `503 Service Unavailable` | The signing-key fetch needed for GitHub OIDC failed, or the ledger could not be reached or returned a server error. |
 | `504 Gateway Timeout` | The ledger connection or exchange, including receipt delivery, timed out. |
 | `502 Bad Gateway` | The ledger returned an unexpected status or an invalid receipt. The gateway logs the failure without either document. |

@@ -25,6 +25,7 @@ pub(crate) fn envelope(
     body: &[u8],
     validator: &jsonschema::Validator,
     sender: &str,
+    required_source: Option<&str>,
 ) -> Result<(Vec<u8>, RegistrationReceipt), StatusCode> {
     let StrictJson(mut request) =
         serde_json::from_slice(body).map_err(|_| StatusCode::BAD_REQUEST)?;
@@ -39,6 +40,13 @@ pub(crate) fn envelope(
             .is_ok_and(|authority| authority.host() == host)
     }) {
         return Err(StatusCode::BAD_REQUEST);
+    }
+    if let Some(source) = required_source
+        && rules
+            .iter()
+            .any(|rule| rule["source"].as_str() != Some(source))
+    {
+        return Err(StatusCode::FORBIDDEN);
     }
     let receipt = RegistrationReceipt { count: rules.len() };
     request

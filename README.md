@@ -19,18 +19,24 @@ The gateway is configured through environment variables. It exits before serving
 | `GATEWAY_LEDGER_URL` | yes | — | Absolute `http` or `https` URL whose origin serves the ledger at `/v0/attestations`. Use a URL without embedded credentials. The service does not contact it during startup or readiness checks. |
 | `GATEWAY_BIND_ADDR` | no | `0.0.0.0:8080` | Socket address on which to listen. |
 | `GATEWAY_MAX_BODY_BYTES` | no | `1048576` | Positive maximum request-body size in bytes. |
-| `GATEWAY_REQUEST_TIMEOUT_MS` | no | `30000` | Positive maximum request duration in milliseconds, including the ledger exchange. Ledger connection establishment is also capped at five seconds. |
-| `GATEWAY_API_KEYS` | no | empty | Comma-separated `<sender>:<SHA-256 hex hash>` entries. An empty value disables authenticated ingest. |
-| `GATEWAY_RATE_LIMIT_PER_MINUTE` | no | `60` | Positive request allowance per key and gateway instance. Each key's 60-second window starts with its first request after startup or after the previous window expires. |
+| `GATEWAY_REQUEST_TIMEOUT_MS` | no | `30000` | Positive maximum request duration in milliseconds, including authentication and the ledger exchange. Ledger connection establishment is also capped at five seconds. |
+| `GATEWAY_API_KEYS` | no | empty | Comma-separated `<sender>:<SHA-256 hex hash>` entries. An empty or absent value disables API key authentication. |
+| `GATEWAY_GITHUB_OIDC_REPOSITORIES` | no | empty | Comma-separated GitHub OIDC allowlist of `<owner>/<name>` and `<owner>/*` entries, matched case-insensitively. The wildcard covers all repositories of the organization or personal account. An empty or absent value disables GitHub OIDC. |
+| `GATEWAY_GITHUB_OIDC_AUDIENCE` | with GitHub OIDC | — | Expected audience in the GitHub Actions token, compared exactly. |
+| `GATEWAY_RATE_LIMIT_PER_MINUTE` | no | `60` | Positive request allowance per API key or GitHub OIDC repository and gateway instance, shared by both ingest endpoints. Each 60-second window starts with the first request for that identity or with the first request after the previous window expires. |
 
 The gateway writes structured JSON logs to standard error. For each request it generates an ID, logs it and returns it in the `X-Request-Id` response header. The logs omit request credentials.
 
-## Attestation ingest
+## Ingest
 
 Run `gateway keygen <sender>` to print a random bearer key once and the entry to add to `GATEWAY_API_KEYS`. A sender label can contain 1 to 128 ASCII letters, digits, dots, underscores or hyphens. Give the bearer key to the sender and deploy the same hash entries to every gateway instance. To rotate a key, add a new entry with the same label, switch the sender to the new key, then remove the old entry from all instances.
 
-Send an attestation to `POST /v0/attestations` with `Authorization: Bearer <key>`. After the ledger confirms creation, the gateway returns `201 Created` with the attestation's `id` in a JSON object. The [ingest contract](why/contracts/ingest/attestation.md) defines the accepted document, request processing order and error statuses.
+API keys and GitHub OIDC can be enabled independently. With GitHub OIDC enabled, grant the GitHub Actions job `id-token: write` and request an ID token for the configured audience. Set the request header to `Authorization: Bearer <credential>` with the API key or GitHub OIDC token. When GitHub OIDC is enabled, compact JWT credentials are reserved for that method.
+
+For GitHub OIDC the gateway uses `github.com/<owner>/<name>` in lowercase as the sender. The attestation repository and every registration rule source must equal that sender. Write access to an allowed repository confers authority to register versions for its own source.
+
+Send attestations to `POST /v0/attestations` and rule registrations to `POST /v0/rule-registrations`. See the [attestation contract](why/contracts/ingest/attestation.md) and [rule registration contract](why/contracts/ingest/rule-registration.md) for accepted documents and response statuses.
 
 ## Health endpoints
 
-`GET /healthz` reports liveness and `GET /readyz` reports whether the service completed valid configuration. Both return `204 No Content`. Readiness does not probe the ledger.
+`GET /healthz` reports liveness and `GET /readyz` reports whether the service completed valid configuration. Both return `204 No Content`. Readiness uses local configuration only.

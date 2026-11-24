@@ -15,6 +15,7 @@ contracts:
       - REQ-0008
       - REQ-0009
       - REQ-0010
+      - REQ-0013
   - id: CON-0002
     name: Submit rule registrations
     document: rule-registration.md
@@ -27,3 +28,4 @@ contracts:
       - REQ-0010
       - REQ-0011
       - REQ-0012
+      - REQ-0013

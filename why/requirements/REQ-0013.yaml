@@ -1,0 +1,27 @@
+id: REQ-0013
+name: Authenticate and authorize GitHub OIDC senders
+description: >-
+  Both ingest endpoints must accept GitHub OIDC when configured through the
+  environment. The gateway must compare repository names case-insensitively
+  against a comma-separated allowlist of owner/name and owner/* entries.
+  The wildcard includes every repository of the named organization or
+  personal account. An empty or absent list disables GitHub OIDC. An enabled
+  method requires an exact audience and invalid configuration prevents startup.
+  Evaluate each bearer credential through a single authentication method.
+  Verify GitHub Actions RS256 signatures, the fixed issuer, audience, expiry
+  and not-before with bounded clock leeway, and the allowed repository claim.
+  Cache GitHub's signing keys in memory per instance and bound the rate of
+  refreshes for unknown key IDs. Bound signing-key requests by time and refuse
+  redirects. A signing-key fetch failure returns 503 only for GitHub OIDC
+  requests that need that fetch. Readiness must not probe GitHub.
+  After body validation, return an empty 403 if any registration rule source
+  or the attestation repository differs from the GitHub OIDC sender.
+rationale: >-
+  The gateway can attribute workflow submissions to a repository and enforce
+  its authority over its own source.
+decisions:
+  - DEC-0002
+  - DEC-0007
+  - why:DEC-0010
+  - why:DEC-0012
+  - why:DEC-0013

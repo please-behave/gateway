@@ -16,6 +16,7 @@ use tower_http::{
     timeout::TimeoutLayer,
 };
 
+mod github_oidc;
 mod ingest;
 mod ledger;
 mod registration;
@@ -58,19 +59,26 @@ impl Config {
 }
 
 pub fn app(config: &Config) -> Router {
-    build_app(config).expect("valid gateway configuration and ledger client")
+    build_app(config).expect("valid gateway configuration and HTTP clients")
 }
 
 fn build_app(config: &Config) -> Result<Router> {
     let ledger = ledger::Ledger::new(config)?;
+    let github_oidc = config.ingest.github_oidc()?;
+    Ok(gateway_routes(config, ledger, github_oidc))
+}
+
+fn gateway_routes(
+    config: &Config,
+    ledger: ledger::Ledger,
+    github_oidc: Option<github_oidc::GitHubOidc>,
+) -> Router {
     let health_routes = Router::new()
         .route("/healthz", any(health))
         .route("/readyz", any(health))
         .layer(RequestBodyLimitLayer::new(config.max_body_bytes))
         .layer(request_timeout(config));
-    Ok(log_requests(
-        health_routes.merge(ingest::routes(config, ledger)),
-    ))
+    log_requests(health_routes.merge(ingest::routes(config, ledger, github_oidc)))
 }
 
 pub fn with_limits(router: Router, config: &Config) -> Router {

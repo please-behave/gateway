@@ -9,4 +9,4 @@ description: >-
 rationale: Senders must be attributable and credentials must be replaceable without interrupting delivery.
 decisions:
   - DEC-0004
-  - DEC-0005
+  - DEC-0007

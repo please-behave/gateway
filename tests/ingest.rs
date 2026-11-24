@@ -1,4 +1,4 @@
-//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010, REQ-0011, REQ-0012
+//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010, REQ-0011, REQ-0012, REQ-0013
 
 mod support;
 
@@ -604,6 +604,57 @@ fn invalid_ingest_configuration_fails_without_echoing_the_input() {
             assert!(!error.contains(&value) && !error.contains(FIRST_KEY));
         }
     }
+}
+
+#[test]
+fn rejects_invalid_github_oidc_configuration_before_serving() {
+    let repositories_var = "GATEWAY_GITHUB_OIDC_REPOSITORIES";
+    let audience_var = "GATEWAY_GITHUB_OIDC_AUDIENCE";
+    for (repositories, audience, invalid) in [
+        (
+            "github.com/example/project",
+            Some("fixture"),
+            repositories_var,
+        ),
+        ("example/pro*", Some("fixture"), repositories_var),
+        ("*/project", Some("fixture"), repositories_var),
+        ("example/project,", Some("fixture"), repositories_var),
+        ("example/project", None, audience_var),
+        ("example/project", Some("  "), audience_var),
+        ("example/project", Some("fixture\n"), audience_var),
+    ] {
+        let mut command = support::command(env!("CARGO_BIN_EXE_gateway"));
+        command
+            .env("GATEWAY_LEDGER_URL", "http://ledger.test")
+            .env(repositories_var, repositories);
+        if let Some(audience) = audience {
+            command.env(audience_var, audience);
+        }
+
+        let result = command
+            .output()
+            .expect("run gateway with invalid configuration");
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        let error = String::from_utf8(result.stderr).unwrap();
+        assert!(error.contains(invalid), "{error}");
+        assert!(!error.contains(repositories));
+    }
+}
+
+#[test]
+fn github_oidc_can_be_enabled_without_api_keys_and_has_local_readiness() {
+    let gateway = start_gateway(1024, 1000, |command| {
+        command
+            .env("GATEWAY_GITHUB_OIDC_REPOSITORIES", "Example/*")
+            .env("GATEWAY_GITHUB_OIDC_AUDIENCE", "fixture");
+    });
+    let readiness = request(
+        gateway.address,
+        "GET /readyz HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n",
+    );
+    expect_status(&readiness, 204);
+    expect_status(&submit(&gateway, Some(FIRST_KEY), "", VALID), 401);
 }
 
 #[test]

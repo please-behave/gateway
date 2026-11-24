@@ -11,5 +11,5 @@ description: >-
 rationale: The ledger receives bounded evidence with attribution established by the gateway.
 decisions:
   - DEC-0002
-  - DEC-0005
+  - DEC-0007
   - DEC-0006
