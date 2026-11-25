@@ -61,3 +61,20 @@ must be non-empty and contain no NUL characters. Unknown fields are rejected.
 This optional extension retains the existing API and document format versions.
 The gateway accepts attestations that omit `rule` and forwards supplied rule
 metadata unchanged in the canonical ledger envelope.
+
+## Bound Rule Sets
+
+The optional `rule_sets` array reports the Rule Sets bound during the run
+(why:DEC-0018). Each entry requires `source`, `path`, `id`, `version` and
+`execution_points`. The source is a normalized Git repository identity with
+a host and no port. The path is the repository-relative directory, with
+`.` for the repository root. Source and path are each at most 256 characters.
+The ID consists of 1 to 128 ASCII letters, digits, underscores or hyphens.
+The version follows the same `A.B` syntax and 64-character limit as rule
+metadata. Unknown fields are rejected.
+
+The array may contain up to 100 bindings. Each binding reports 1 to 64
+execution points as non-empty strings of up to 128 characters without NUL
+characters. The gateway accepts attestations with the array omitted or empty
+and preserves the field and its values when forwarding the envelope. This
+extension retains the existing API and document format versions.

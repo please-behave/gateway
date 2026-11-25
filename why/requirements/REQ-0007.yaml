@@ -10,6 +10,10 @@ description: >-
   Results may omit rule metadata. When present, it must contain the bounded
   rule identity fields and either omit both version and digest or supply both
   within the syntax and bounds of the canonical ledger format.
+  Attestations may omit the bound Rule Sets array or supply it empty. Each
+  supplied binding must contain the bounded Rule Set identity, owner-assigned
+  version and the execution points at which the set was bound, within the
+  syntax and bounds of the public ingest contract.
 rationale: Clients need actionable outcomes and downstream components need bounded, structurally valid evidence with trusted attribution.
 decisions:
   - DEC-0001
@@ -17,3 +21,5 @@ decisions:
   - why:DEC-0002
   - why:DEC-0010
   - why:DEC-0011
+  - why:DEC-0016
+  - why:DEC-0018

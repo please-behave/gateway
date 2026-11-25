@@ -285,6 +285,99 @@ fn rejects_invalid_rule_metadata_before_forwarding() {
     assert!(ledger.requests.try_recv().is_err());
 }
 
+fn bound_rule_set() -> Value {
+    json!({
+        "source": "github.com/example/rules",
+        "path": "rules/verify",
+        "id": "verify",
+        "version": "0.12",
+        "execution_points": ["check", "pre-push"],
+    })
+}
+
+#[test]
+fn forwards_bound_rule_sets_unchanged_when_present() {
+    let ledger = LedgerStub::reply(201, RECEIPT);
+    let gateway = start_with_ledger(&entry("build", FIRST_KEY), 3, 4096, 1000, ledger.address);
+    let mut attestation: Value = serde_json::from_str(VALID).unwrap();
+    attestation["execution_points"] = json!(["check", "pre-push"]);
+    let mut local_set = bound_rule_set();
+    local_set["source"] = attestation["repository"].clone();
+    local_set["path"] = json!(".");
+    local_set["execution_points"] = json!(["check"]);
+
+    let mut empty = attestation.clone();
+    empty["rule_sets"] = json!([]);
+    let mut populated = attestation.clone();
+    populated["rule_sets"] = json!([bound_rule_set(), local_set]);
+
+    for payload in [attestation, empty, populated] {
+        expect_status(
+            &submit(&gateway, Some(FIRST_KEY), "", &payload.to_string()),
+            201,
+        );
+        let (_, body) = ledger.requests.try_recv().unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"sender": "build", "attestation": payload}),
+        );
+    }
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn rejects_malformed_or_oversized_rule_set_bindings_before_forwarding() {
+    let ledger = LedgerStub::reply(201, RECEIPT);
+    let gateway = start_with_ledger(
+        &entry("build", FIRST_KEY),
+        40,
+        32 * 1024,
+        1000,
+        ledger.address,
+    );
+    let mut attestation: Value = serde_json::from_str(VALID).unwrap();
+    let binding = bound_rule_set();
+    let mut invalid_bindings = vec![json!(null)];
+    for field in binding.as_object().unwrap().keys() {
+        let mut incomplete = binding.clone();
+        incomplete.as_object_mut().unwrap().remove(field);
+        invalid_bindings.push(incomplete);
+    }
+    for (field, value) in [
+        ("source", json!("github.com:443/example/rules")),
+        ("source", json!("https://github.com/example/rules")),
+        ("source", json!(format!("github.com/{}", "x".repeat(246)))),
+        ("path", json!("../rules")),
+        ("path", json!("x".repeat(257))),
+        ("id", json!("")),
+        ("id", json!("x".repeat(129))),
+        ("version", json!("01.2")),
+        ("version", json!("1.2\n")),
+        ("version", json!(format!("{}.0", "1".repeat(63)))),
+        ("execution_points", json!([])),
+        ("execution_points", json!(vec!["check"; 65])),
+        ("execution_points", json!(["x".repeat(129)])),
+        ("execution_points", json!([""])),
+        ("execution_points", json!(["check\0"])),
+        ("execution_points", json!("check")),
+        ("extra", json!(true)),
+    ] {
+        let mut invalid = binding.clone();
+        invalid[field] = value;
+        invalid_bindings.push(invalid);
+    }
+    let mut invalid_lists = vec![json!(null), binding.clone(), json!(vec![binding; 101])];
+    invalid_lists.extend(invalid_bindings.into_iter().map(|entry| json!([entry])));
+    for rule_sets in invalid_lists {
+        attestation["rule_sets"] = rule_sets;
+        expect_status(
+            &submit(&gateway, Some(FIRST_KEY), "", &attestation.to_string()),
+            400,
+        );
+    }
+    assert!(ledger.requests.try_recv().is_err());
+}
+
 #[test]
 fn maps_ledger_failure_statuses_and_logs_unexpected_responses_without_documents() {
     for (ledger_status, ledger_body, gateway_status) in [
