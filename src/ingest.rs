@@ -27,12 +27,13 @@ use tower_http::{limit::RequestBodyLimitLayer, request_id::RequestId};
 use crate::{
     Config,
     github_oidc::{self, AuthenticationError, GitHubOidc, GitHubOidcConfig},
-    ledger::{AttestationReceipt, Ledger},
+    ledger::{AttestationReceipt, Ledger, MAX_LEDGER_BODY_BYTES, RELEASE_PATH, ReleaseReceipt},
     optional, positive,
-    registration::{MAX_LEDGER_BODY_BYTES, RegistrationKind},
+    registration::{RegistrationKind, StrictJson},
 };
 
 const SCHEMA: &[u8] = include_bytes!("../why/contracts/ingest/attestation.schema.json");
+const RELEASE_SCHEMA: &[u8] = include_bytes!("../why/contracts/ingest/release-fact.schema.json");
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 const DEFAULT_REQUESTS_PER_MINUTE: usize = 60;
 
@@ -172,6 +173,7 @@ struct Ingest {
     validator: jsonschema::Validator,
     registration_validator: jsonschema::Validator,
     rule_set_registration_validator: jsonschema::Validator,
+    release_validator: jsonschema::Validator,
     ledger: Ledger,
     request_timeout: Duration,
 }
@@ -273,6 +275,8 @@ pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHub
     let Json(schema) = Json::from_bytes(SCHEMA).expect("bundled attestation schema is JSON");
     let validator =
         jsonschema::validator_for(&schema).expect("bundled attestation schema is valid");
+    let Json(release_schema) =
+        Json::from_bytes(RELEASE_SCHEMA).expect("bundled release fact schema is JSON");
     let state = Arc::new(Ingest {
         keys: config
             .ingest
@@ -290,6 +294,8 @@ pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHub
         validator,
         registration_validator: RegistrationKind::Rules.validator(),
         rule_set_registration_validator: RegistrationKind::RuleSets.validator(),
+        release_validator: jsonschema::validator_for(&release_schema)
+            .expect("bundled release fact schema is valid"),
         ledger,
         request_timeout: config.request_timeout,
     });
@@ -314,7 +320,16 @@ pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHub
         );
     }
 
-    router.with_state(state)
+    router
+        .route(
+            RELEASE_PATH,
+            post(record_release)
+                .route_layer(RequestBodyLimitLayer::new(
+                    config.max_body_bytes.min(MAX_LEDGER_BODY_BYTES),
+                ))
+                .route_layer(admission),
+        )
+        .with_state(state)
 }
 
 async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Next) -> Response {
@@ -448,6 +463,42 @@ async fn register(
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .body(body);
     Ledger::deliver(request, admitted.deadline, &request_id, receipt).await
+}
+
+async fn record_release(
+    State(state): State<Arc<Ingest>>,
+    axum::Extension(admitted): axum::Extension<Admitted>,
+    axum::Extension(request_id): axum::Extension<RequestId>,
+    request: Request,
+) -> Response {
+    let bytes = match read_body(request, admitted.deadline).await {
+        Ok(bytes) => bytes,
+        Err(status) => return status.into_response(),
+    };
+    let Ok(StrictJson(mut fact)) = serde_json::from_slice(&bytes) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if !state.release_validator.is_valid(&fact) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    if let Some(repository) = admitted.required_repository()
+        && fact["repository"].as_str() != Some(repository)
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if Deadline::now() >= admitted.deadline {
+        return StatusCode::REQUEST_TIMEOUT.into_response();
+    }
+
+    let auth_method = if admitted.github_oidc {
+        "github_oidc"
+    } else {
+        "api_key"
+    };
+    fact["sender"] = admitted.sender.as_ref().into();
+    fact["auth_method"] = auth_method.into();
+    let request = state.ledger.request(&ReleaseReceipt).json(&fact);
+    Ledger::deliver(request, admitted.deadline, &request_id, ReleaseReceipt).await
 }
 
 async fn read_body(request: Request, deadline: Deadline) -> Result<Bytes, StatusCode> {

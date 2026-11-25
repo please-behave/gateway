@@ -1,4 +1,4 @@
-//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010, REQ-0011, REQ-0012, REQ-0013
+//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010, REQ-0011, REQ-0012, REQ-0013, REQ-0014
 
 mod support;
 
@@ -21,6 +21,9 @@ const VALID: &str = r#"{"schema_version":1,"repository":"github.com/example/proj
 const RULE_IDENTITY: &str =
     r#""source":"github.com/example/rules","path":"rules/verify","id":"verify""#;
 const RECEIPT: &str = r#"{"id":"0198b0a7-46a8-7000-8000-000000000001"}"#;
+const RELEASE_PATH: &str = "/v0/facts/releases";
+const RELEASE_COMMIT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
+const RELEASE: &str = r#"{"repository":"git.example.org/team/project","version":"  Release 1  ","commit":"0123456789ABCDEF0123456789ABCDEF01234567"}"#;
 
 fn entry(sender: &str, key: &str) -> String {
     format!("{sender}:{:x}", Sha256::digest(key.as_bytes()))
@@ -174,6 +177,115 @@ fn expect_status(response: &str, status: u16) {
         assert_eq!(response.split_once("\r\n\r\n").unwrap().1, "", "{response}");
     }
     assert!(response.contains("\r\nx-request-id: "), "{response}");
+}
+
+#[test]
+fn forwards_release_facts_once_and_relays_each_ledger_outcome() {
+    for (status, outcome) in [(201, "created"), (200, "unchanged"), (409, "conflict")] {
+        let receipt = json!({"outcome": outcome}).to_string();
+        let ledger = LedgerStub::reply(status, &receipt);
+        let gateway = start_with_ledger(&entry("build", FIRST_KEY), 1, 1024, 1000, ledger.address);
+        let body = if status == 200 {
+            RELEASE.replace(RELEASE_COMMIT, &"a".repeat(64))
+        } else {
+            RELEASE.to_owned()
+        };
+        let response = post(&gateway, RELEASE_PATH, Some(FIRST_KEY), "", &body);
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status} ")),
+            "{response}"
+        );
+        assert!(response.contains("\r\ncontent-type: application/json\r\n"));
+        assert_eq!(response.split_once("\r\n\r\n").unwrap().1, receipt);
+
+        let (headers, forwarded) = ledger.requests.try_recv().unwrap();
+        assert_eq!(headers[0], "POST /v0/facts/releases HTTP/1.1");
+        assert!(
+            !headers
+                .iter()
+                .any(|header| header.starts_with("authorization:"))
+        );
+        let mut expected: Value = serde_json::from_str(&body).unwrap();
+        expected["sender"] = "build".into();
+        expected["auth_method"] = "api_key".into();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&forwarded).unwrap(),
+            expected
+        );
+        assert!(ledger.requests.try_recv().is_err());
+    }
+}
+
+#[test]
+fn rejects_invalid_release_requests_and_shares_the_ingest_allowance() {
+    let ledger = LedgerStub::reply(201, r#"{"outcome":"created"}"#);
+    let invalid = [
+        "{".to_owned(),
+        RELEASE.replace(RELEASE_COMMIT, &"a".repeat(39)),
+        RELEASE.replace(RELEASE_COMMIT, &"g".repeat(40)),
+        RELEASE.replace(RELEASE_COMMIT, &format!(r"{RELEASE_COMMIT}\n")),
+        RELEASE.replace("  Release 1  ", ""),
+        RELEASE.replace("  Release 1  ", &"é".repeat(257)),
+        RELEASE.replace("  Release 1  ", r"release\u0000"),
+        RELEASE.replacen('{', r#"{"sender":"forged","#, 1),
+        RELEASE.replacen('{', r#"{"auth_method":"github_oidc","#, 1),
+        RELEASE.replacen('{', r#"{"version":"duplicate","#, 1),
+        RELEASE.replace(r#""version":"  Release 1  ","#, ""),
+    ];
+    let gateway = start_with_ledger(
+        &entry("build", FIRST_KEY),
+        invalid.len() + 1,
+        1024,
+        1000,
+        ledger.address,
+    );
+    for credential in [None, Some(SECOND_KEY)] {
+        let response = post(&gateway, RELEASE_PATH, credential, "", RELEASE);
+        expect_status(&response, 401);
+        assert!(response.contains("\r\nwww-authenticate: Bearer\r\n"));
+    }
+    for body in invalid {
+        expect_status(
+            &post(&gateway, RELEASE_PATH, Some(FIRST_KEY), "", &body),
+            400,
+        );
+    }
+    let oversized = " ".repeat(1025);
+    expect_status(
+        &post(&gateway, RELEASE_PATH, Some(FIRST_KEY), "", &oversized),
+        413,
+    );
+    let limited = submit(&gateway, Some(FIRST_KEY), "", VALID);
+    expect_status(&limited, 429);
+    assert!(limited.contains("\r\nretry-after: "));
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn reports_release_delivery_failures_without_retrying() {
+    let keys = entry("build", FIRST_KEY);
+    let offline = start_ingest(&keys, 1, 1024);
+    expect_status(
+        &post(&offline, RELEASE_PATH, Some(FIRST_KEY), "", RELEASE),
+        503,
+    );
+
+    for (ledger_status, receipt, gateway_status) in [
+        (500, "failure", 503),
+        (400, "unexpected rejection", 502),
+        (200, r#"{"outcome":"created"}"#, 502),
+        (409, r#"{"outcome":"conflict","outcome":"conflict"}"#, 502),
+        (201, r#"{"outcome":"created","extra":"unexpected"}"#, 502),
+    ] {
+        let ledger = LedgerStub::reply(ledger_status, receipt);
+        let gateway = start_with_ledger(&keys, 1, 1024, 1000, ledger.address);
+        expect_status(
+            &post(&gateway, RELEASE_PATH, Some(FIRST_KEY), "", RELEASE),
+            gateway_status,
+        );
+        assert!(ledger.requests.try_recv().is_ok());
+        assert!(ledger.requests.try_recv().is_err());
+    }
 }
 
 #[test]

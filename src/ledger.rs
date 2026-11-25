@@ -14,6 +14,8 @@ use crate::{Config, parse_ledger_url};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RECEIPT_BYTES: usize = 1024;
+pub(crate) const MAX_LEDGER_BODY_BYTES: usize = 2 * 1024 * 1024;
+pub(crate) const RELEASE_PATH: &str = "/v0/facts/releases";
 
 pub(crate) struct Ledger {
     client: Client,
@@ -55,12 +57,12 @@ impl Ledger {
 }
 
 pub(crate) trait Receipt {
-    const STATUS: StatusCode;
     const INVALID_MESSAGE: &'static str;
 
     fn path(&self) -> &'static str;
     fn max_bytes(&self) -> usize;
-    fn decode(self, body: &[u8]) -> Option<Response>;
+    fn accepts_status(&self, status: StatusCode) -> bool;
+    fn decode(self, status: StatusCode, body: &[u8]) -> Option<Response>;
 }
 
 async fn send<R: Receipt>(request: RequestBuilder, request_id: &RequestId, receipt: R) -> Response {
@@ -78,7 +80,7 @@ async fn send<R: Receipt>(request: RequestBuilder, request_id: &RequestId, recei
     if status.is_server_error() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
-    if status != R::STATUS {
+    if !receipt.accepts_status(status) {
         tracing::warn!(
             request_id,
             ledger_status = status.as_u16(),
@@ -88,7 +90,7 @@ async fn send<R: Receipt>(request: RequestBuilder, request_id: &RequestId, recei
     }
 
     match read_receipt(response, receipt.max_bytes()).await {
-        Ok(Some(body)) => match receipt.decode(&body) {
+        Ok(Some(body)) => match receipt.decode(status, &body) {
             Some(response) => response,
             None => invalid_receipt::<R>(request_id),
         },
@@ -119,7 +121,6 @@ async fn read_receipt(
 pub(crate) struct AttestationReceipt;
 
 impl Receipt for AttestationReceipt {
-    const STATUS: StatusCode = StatusCode::CREATED;
     const INVALID_MESSAGE: &'static str = "invalid ledger creation receipt";
 
     fn path(&self) -> &'static str {
@@ -130,11 +131,60 @@ impl Receipt for AttestationReceipt {
         MAX_RECEIPT_BYTES
     }
 
-    fn decode(self, body: &[u8]) -> Option<Response> {
+    fn accepts_status(&self, status: StatusCode) -> bool {
+        status == StatusCode::CREATED
+    }
+
+    fn decode(self, status: StatusCode, body: &[u8]) -> Option<Response> {
         let Json(mut object) = Json::<BTreeMap<String, String>>::from_bytes(body).ok()?;
         let id = object.remove("id")?;
         (object.is_empty() && is_uuid_v7(&id))
-            .then(|| (Self::STATUS, Json(BTreeMap::from([("id", id)]))).into_response())
+            .then(|| (status, Json(BTreeMap::from([("id", id)]))).into_response())
+    }
+}
+
+pub(crate) struct ReleaseReceipt;
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseOutcome {
+    outcome: ReleaseOutcomeKind,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ReleaseOutcomeKind {
+    Created,
+    Unchanged,
+    Conflict,
+}
+
+impl Receipt for ReleaseReceipt {
+    const INVALID_MESSAGE: &'static str = "invalid ledger release receipt";
+
+    fn path(&self) -> &'static str {
+        RELEASE_PATH
+    }
+
+    fn max_bytes(&self) -> usize {
+        MAX_RECEIPT_BYTES
+    }
+
+    fn accepts_status(&self, status: StatusCode) -> bool {
+        matches!(
+            status,
+            StatusCode::CREATED | StatusCode::OK | StatusCode::CONFLICT
+        )
+    }
+
+    fn decode(self, status: StatusCode, body: &[u8]) -> Option<Response> {
+        let receipt: ReleaseOutcome = serde_json::from_slice(body).ok()?;
+        let expected = match receipt.outcome {
+            ReleaseOutcomeKind::Created => StatusCode::CREATED,
+            ReleaseOutcomeKind::Unchanged => StatusCode::OK,
+            ReleaseOutcomeKind::Conflict => StatusCode::CONFLICT,
+        };
+        (status == expected).then(|| (status, Json(receipt)).into_response())
     }
 }
 

@@ -42,3 +42,15 @@ contracts:
       - REQ-0011
       - REQ-0012
       - REQ-0013
+  - id: CON-0004
+    name: Submit a release fact
+    document: release-fact.md
+    schema: release-fact.schema.json
+    requirements:
+      - REQ-0002
+      - REQ-0003
+      - REQ-0005
+      - REQ-0006
+      - REQ-0010
+      - REQ-0013
+      - REQ-0014

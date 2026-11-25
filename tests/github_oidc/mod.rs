@@ -1,4 +1,4 @@
-//! REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0011, REQ-0012, REQ-0013
+//! REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0011, REQ-0012, REQ-0013, REQ-0014
 
 use std::{sync::Mutex as StdMutex, time::Duration};
 
@@ -24,6 +24,7 @@ const REPOSITORY: &str = "github.com/example/project";
 const ATTESTATIONS: &str = "/v0/attestations";
 const REGISTRATIONS: &str = "/v0/rule-registrations";
 const RULE_SETS: &str = "/v0/rule-set-registrations";
+const RELEASES: &str = "/v0/facts/releases";
 const INVALID: &str = "invalid.jwt.fixture";
 
 struct SigningFixture {
@@ -160,11 +161,22 @@ async fn ledger_endpoint() -> (Server, LedgerRequests) {
         Json(json!({"outcomes": outcomes}))
     }
 
+    async fn release(
+        State(records): State<LedgerRequests>,
+        headers: HeaderMap,
+        Json(body): Json<Value>,
+    ) -> impl IntoResponse {
+        assert!(!headers.contains_key("authorization"));
+        records.lock().unwrap().push(body);
+        (StatusCode::CREATED, Json(json!({"outcome": "created"})))
+    }
+
     let requests = LedgerRequests::default();
     let router = Router::new()
         .route(ATTESTATIONS, post(attest))
         .route(REGISTRATIONS, post(register))
         .route(RULE_SETS, post(register))
+        .route(RELEASES, post(release))
         .with_state(requests.clone());
     (Server::start(router).await, requests)
 }
@@ -209,6 +221,14 @@ fn attestation(repository: &str) -> Value {
         "execution_points": ["pre-push"],
         "overall": "PASS",
         "results": [{"id":"test","kind":"check","status":"WARN"}]
+    })
+}
+
+fn release_fact(repository: &str) -> Value {
+    json!({
+        "repository": repository,
+        "version": "v1",
+        "commit": "0123456789abcdef0123456789abcdef01234567"
     })
 }
 
@@ -358,7 +378,7 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
     let (endpoint, key_requests) = key_endpoint(&fixture).await;
     let (ledger, requests) = ledger_endpoint().await;
     let oidc = verifier("example/*", format!("{}/jwks", endpoint.url));
-    let gateway = gateway(oidc, &ledger.url, 3, Duration::from_secs(2)).await;
+    let gateway = gateway(oidc, &ledger.url, 4, Duration::from_secs(2)).await;
 
     let token = fixture.token("Example/Project");
     submit(
@@ -384,6 +404,14 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
         &token,
         rule_set_registration(REPOSITORY, other),
         StatusCode::OK,
+    )
+    .await;
+    submit(
+        &gateway,
+        RELEASES,
+        &token,
+        release_fact(REPOSITORY),
+        StatusCode::CREATED,
     )
     .await;
     let token = fixture.token("example/project");
@@ -430,15 +458,25 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
     .await;
 
     let records = requests.lock().unwrap();
-    assert_eq!(records.len(), 6);
+    assert_eq!(records.len(), 7);
     assert_eq!(records[0]["sender"], REPOSITORY);
     assert_eq!(records[1]["sender"], REPOSITORY);
     assert_eq!(records[1]["rules"][0]["source"], REPOSITORY);
     assert_eq!(records[2]["sender"], REPOSITORY);
     assert_eq!(records[2]["sets"][0]["members"][0]["source"], other);
-    assert_eq!(records[3]["sender"], other);
-    assert_eq!(records[4]["sender"], "fixture");
+    assert_eq!(
+        records[3],
+        json!({
+            "repository": REPOSITORY,
+            "version": "v1",
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "sender": REPOSITORY,
+            "auth_method": "github_oidc"
+        })
+    );
+    assert_eq!(records[4]["sender"], other);
     assert_eq!(records[5]["sender"], "fixture");
+    assert_eq!(records[6]["sender"], "fixture");
     assert_eq!(key_requests.lock().unwrap().requests, 1);
 }
 
@@ -474,6 +512,14 @@ async fn rejects_repository_mismatches_before_forwarding_any_ingest_request() {
         .unwrap()
         .push(rule_set_registration(other, REPOSITORY)["sets"][0].clone());
     submit(&gateway, RULE_SETS, &token, batch, StatusCode::FORBIDDEN).await;
+    submit(
+        &gateway,
+        RELEASES,
+        &token,
+        release_fact(other),
+        StatusCode::FORBIDDEN,
+    )
+    .await;
     let headers = submit(
         &gateway,
         ATTESTATIONS,

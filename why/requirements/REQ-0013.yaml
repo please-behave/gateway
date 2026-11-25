@@ -14,9 +14,10 @@ description: >-
   refreshes for unknown key IDs. Bound signing-key requests by time and refuse
   redirects. A signing-key fetch failure returns 503 only for GitHub OIDC
   requests that need that fetch. Readiness must not probe GitHub.
-  After body validation, return an empty 403 if a registered rule source, a registered
-  Rule Set source or the attestation repository differs from the GitHub OIDC
-  sender. A Rule Set can reference member rules from other repositories.
+  After body validation, return an empty 403 if a registered rule source, a
+  registered Rule Set source, or the repository of an attestation or release
+  fact differs from the GitHub OIDC sender. A Rule Set can reference member
+  rules from other repositories.
 rationale: >-
   The gateway can attribute workflow submissions to a repository and enforce
   its authority over its own source.
@@ -27,3 +28,4 @@ decisions:
   - why:DEC-0012
   - why:DEC-0013
   - why:DEC-0017
+  - why:DEC-0020

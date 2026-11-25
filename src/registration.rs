@@ -11,9 +11,7 @@ use serde::{
 };
 use serde_json::{Map, Value};
 
-use crate::ledger::Receipt;
-
-pub(crate) const MAX_LEDGER_BODY_BYTES: usize = 2 * 1024 * 1024;
+use crate::ledger::{MAX_LEDGER_BODY_BYTES, Receipt};
 
 #[derive(Clone, Copy)]
 pub(crate) enum RegistrationKind {
@@ -110,7 +108,6 @@ pub(crate) enum RegistrationReceipt {
 }
 
 impl Receipt for RegistrationReceipt {
-    const STATUS: StatusCode = StatusCode::OK;
     const INVALID_MESSAGE: &'static str = "invalid ledger registration receipt";
 
     fn path(&self) -> &'static str {
@@ -127,7 +124,11 @@ impl Receipt for RegistrationReceipt {
         }
     }
 
-    fn decode(self, body: &[u8]) -> Option<Response> {
+    fn accepts_status(&self, status: StatusCode) -> bool {
+        status == StatusCode::OK
+    }
+
+    fn decode(self, status: StatusCode, body: &[u8]) -> Option<Response> {
         let StrictJson(receipt) = serde_json::from_slice(body).ok()?;
         let envelope = receipt.as_object().filter(|object| object.len() == 1)?;
         let outcomes = envelope.get("outcomes")?.as_array()?;
@@ -140,7 +141,7 @@ impl Receipt for RegistrationReceipt {
                     })
             }
         };
-        valid.then(|| (Self::STATUS, Json(receipt)).into_response())
+        valid.then(|| (status, Json(receipt)).into_response())
     }
 }
 
@@ -187,7 +188,7 @@ fn valid_outcome(value: &Value) -> bool {
 }
 
 // The ledger's digest format requires unique keys even after newline normalization.
-struct StrictJson(Value);
+pub(crate) struct StrictJson(pub(crate) Value);
 
 impl<'de> Deserialize<'de> for StrictJson {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
