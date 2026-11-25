@@ -13,71 +13,158 @@ use serde_json::{Map, Value};
 
 use crate::ledger::Receipt;
 
-const SCHEMA: &[u8] = include_bytes!("../why/contracts/ingest/rule-registration.schema.json");
 pub(crate) const MAX_LEDGER_BODY_BYTES: usize = 2 * 1024 * 1024;
 
-pub(crate) fn validator() -> jsonschema::Validator {
-    let schema = serde_json::from_slice(SCHEMA).expect("bundled registration schema is JSON");
-    jsonschema::validator_for(&schema).expect("bundled registration schema is valid")
+#[derive(Clone, Copy)]
+pub(crate) enum RegistrationKind {
+    Rules,
+    RuleSets,
 }
 
-pub(crate) fn envelope(
-    body: &[u8],
-    validator: &jsonschema::Validator,
-    sender: &str,
-    required_source: Option<&str>,
-) -> Result<(Vec<u8>, RegistrationReceipt), StatusCode> {
-    let StrictJson(mut request) =
-        serde_json::from_slice(body).map_err(|_| StatusCode::BAD_REQUEST)?;
-    if !validator.is_valid(&request) {
-        return Err(StatusCode::BAD_REQUEST);
+impl RegistrationKind {
+    pub(crate) fn path(self) -> &'static str {
+        match self {
+            Self::Rules => "/v0/rule-registrations",
+            Self::RuleSets => "/v0/rule-set-registrations",
+        }
     }
-    let rules = request["rules"].as_array().expect("validated rules array");
-    if !rules.iter().all(|rule| {
-        let source = rule["source"].as_str().expect("validated rule source");
-        let (host, _) = source.split_once('/').expect("validated source separator");
-        host.parse::<Authority>()
-            .is_ok_and(|authority| authority.host() == host)
-    }) {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    if let Some(source) = required_source
-        && rules
-            .iter()
-            .any(|rule| rule["source"].as_str() != Some(source))
-    {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    let receipt = RegistrationReceipt { count: rules.len() };
-    request
-        .as_object_mut()
-        .expect("validated registration object")
-        .insert("sender".into(), sender.into());
 
-    let body = serde_json::to_vec(&request).expect("serialize validated JSON");
-    if body.len() > MAX_LEDGER_BODY_BYTES {
-        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    pub(crate) fn validator(self) -> jsonschema::Validator {
+        let bytes: &[u8] = match self {
+            Self::Rules => include_bytes!("../why/contracts/ingest/rule-registration.schema.json"),
+            Self::RuleSets => {
+                include_bytes!("../why/contracts/ingest/rule-set-registration.schema.json")
+            }
+        };
+        let schema = serde_json::from_slice(bytes).expect("bundled registration schema is JSON");
+        jsonschema::validator_for(&schema).expect("bundled registration schema is valid")
     }
-    Ok((body, receipt))
+
+    pub(crate) fn envelope(
+        self,
+        body: &[u8],
+        validator: &jsonschema::Validator,
+        sender: &str,
+        required_source: Option<&str>,
+    ) -> Result<(Vec<u8>, RegistrationReceipt), StatusCode> {
+        let StrictJson(mut request) =
+            serde_json::from_slice(body).map_err(|_| StatusCode::BAD_REQUEST)?;
+        if !validator.is_valid(&request) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+
+        let items = match self {
+            Self::Rules => &request["rules"],
+            Self::RuleSets => &request["sets"],
+        }
+        .as_array()
+        .expect("validated registration array");
+        if !items.iter().all(valid_source) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        let receipt = match self {
+            Self::Rules => RegistrationReceipt::Rules(items.len()),
+            Self::RuleSets => {
+                let mut member_counts = Vec::with_capacity(items.len());
+                for set in items {
+                    let members = set["members"].as_array().expect("validated members array");
+                    if !members.iter().all(valid_source) {
+                        return Err(StatusCode::BAD_REQUEST);
+                    }
+                    member_counts.push(members.len());
+                }
+                RegistrationReceipt::RuleSets(member_counts)
+            }
+        };
+
+        if let Some(source) = required_source
+            && items
+                .iter()
+                .any(|item| item["source"].as_str() != Some(source))
+        {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        request
+            .as_object_mut()
+            .expect("validated registration object")
+            .insert("sender".into(), sender.into());
+
+        let body = serde_json::to_vec(&request).expect("serialize validated JSON");
+        if body.len() > MAX_LEDGER_BODY_BYTES {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+        Ok((body, receipt))
+    }
 }
 
-pub(crate) struct RegistrationReceipt {
-    count: usize,
+fn valid_source(item: &Value) -> bool {
+    let source = item["source"].as_str().expect("validated source");
+    let (host, _) = source.split_once('/').expect("validated source separator");
+    host.parse::<Authority>()
+        .is_ok_and(|authority| authority.host() == host)
+}
+
+pub(crate) enum RegistrationReceipt {
+    Rules(usize),
+    RuleSets(Vec<usize>),
 }
 
 impl Receipt for RegistrationReceipt {
-    const PATH: &'static str = "/v0/rule-registrations";
     const STATUS: StatusCode = StatusCode::OK;
-    const MAX_BYTES: usize = 16 * 1024;
     const INVALID_MESSAGE: &'static str = "invalid ledger registration receipt";
+
+    fn path(&self) -> &'static str {
+        match self {
+            Self::Rules(_) => RegistrationKind::Rules.path(),
+            Self::RuleSets(_) => RegistrationKind::RuleSets.path(),
+        }
+    }
+
+    fn max_bytes(&self) -> usize {
+        match self {
+            Self::Rules(_) => 16 * 1024,
+            Self::RuleSets(_) => 2 * 1024 * 1024,
+        }
+    }
 
     fn decode(self, body: &[u8]) -> Option<Response> {
         let StrictJson(receipt) = serde_json::from_slice(body).ok()?;
-        let envelope = receipt.as_object()?;
+        let envelope = receipt.as_object().filter(|object| object.len() == 1)?;
         let outcomes = envelope.get("outcomes")?.as_array()?;
-        (envelope.len() == 1 && outcomes.len() == self.count && outcomes.iter().all(valid_outcome))
-            .then(|| (Self::STATUS, Json(receipt)).into_response())
+        let valid = match self {
+            Self::Rules(count) => outcomes.len() == count && outcomes.iter().all(valid_outcome),
+            Self::RuleSets(member_counts) => {
+                outcomes.len() == member_counts.len()
+                    && outcomes.iter().zip(member_counts).all(|(outcome, count)| {
+                        valid_outcome(outcome) || valid_member_failures(outcome, count)
+                    })
+            }
+        };
+        valid.then(|| (Self::STATUS, Json(receipt)).into_response())
     }
+}
+
+fn valid_member_failures(value: &Value, count: usize) -> bool {
+    let Some(outcome) = value.as_object().filter(|object| object.len() == 2) else {
+        return false;
+    };
+    let Some(failures) = outcome.get("failures").and_then(Value::as_array) else {
+        return false;
+    };
+    let mut seen = BTreeSet::new();
+    outcome.get("outcome").and_then(Value::as_str) == Some("invalid_members")
+        && !failures.is_empty()
+        && failures.len() <= count
+        && failures.iter().all(|failure| {
+            failure.as_object().is_some_and(|object| object.len() == 2)
+                && matches!(
+                    failure["reason"].as_str(),
+                    Some("unregistered" | "digest_mismatch")
+                )
+                && failure["member_index"]
+                    .as_u64()
+                    .is_some_and(|index| index < count as u64 && seen.insert(index))
+        })
 }
 
 fn valid_outcome(value: &Value) -> bool {
@@ -114,7 +201,7 @@ impl<'de> Visitor<'de> for JsonVisitor {
     type Value = StrictJson;
 
     fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a JSON string, boolean, array or object")
+        formatter.write_str("a JSON string, boolean, unsigned integer, array or object")
     }
 
     fn visit_str<E: Error>(self, value: &str) -> Result<StrictJson, E> {
@@ -122,6 +209,10 @@ impl<'de> Visitor<'de> for JsonVisitor {
     }
 
     fn visit_bool<E: Error>(self, value: bool) -> Result<StrictJson, E> {
+        Ok(StrictJson(value.into()))
+    }
+
+    fn visit_u64<E: Error>(self, value: u64) -> Result<StrictJson, E> {
         Ok(StrictJson(value.into()))
     }
 

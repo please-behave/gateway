@@ -36,9 +36,9 @@ impl Ledger {
         Ok(Self { client, base })
     }
 
-    pub(crate) fn request<R: Receipt>(&self) -> RequestBuilder {
+    pub(crate) fn request(&self, receipt: &impl Receipt) -> RequestBuilder {
         let mut endpoint = self.base.clone();
-        endpoint.set_path(R::PATH);
+        endpoint.set_path(receipt.path());
         self.client.post(endpoint)
     }
 
@@ -55,11 +55,11 @@ impl Ledger {
 }
 
 pub(crate) trait Receipt {
-    const PATH: &'static str;
     const STATUS: StatusCode;
-    const MAX_BYTES: usize;
     const INVALID_MESSAGE: &'static str;
 
+    fn path(&self) -> &'static str;
+    fn max_bytes(&self) -> usize;
     fn decode(self, body: &[u8]) -> Option<Response>;
 }
 
@@ -87,7 +87,7 @@ async fn send<R: Receipt>(request: RequestBuilder, request_id: &RequestId, recei
         return StatusCode::BAD_GATEWAY.into_response();
     }
 
-    match read_receipt(response, R::MAX_BYTES).await {
+    match read_receipt(response, receipt.max_bytes()).await {
         Ok(Some(body)) => match receipt.decode(&body) {
             Some(response) => response,
             None => invalid_receipt::<R>(request_id),
@@ -119,10 +119,16 @@ async fn read_receipt(
 pub(crate) struct AttestationReceipt;
 
 impl Receipt for AttestationReceipt {
-    const PATH: &'static str = "/v0/attestations";
     const STATUS: StatusCode = StatusCode::CREATED;
-    const MAX_BYTES: usize = MAX_RECEIPT_BYTES;
     const INVALID_MESSAGE: &'static str = "invalid ledger creation receipt";
+
+    fn path(&self) -> &'static str {
+        "/v0/attestations"
+    }
+
+    fn max_bytes(&self) -> usize {
+        MAX_RECEIPT_BYTES
+    }
 
     fn decode(self, body: &[u8]) -> Option<Response> {
         let Json(mut object) = Json::<BTreeMap<String, String>>::from_bytes(body).ok()?;

@@ -29,3 +29,16 @@ contracts:
       - REQ-0011
       - REQ-0012
       - REQ-0013
+  - id: CON-0003
+    name: Submit Rule Set registrations
+    document: rule-set-registration.md
+    schema: rule-set-registration.schema.json
+    requirements:
+      - REQ-0002
+      - REQ-0003
+      - REQ-0005
+      - REQ-0006
+      - REQ-0010
+      - REQ-0011
+      - REQ-0012
+      - REQ-0013

@@ -4,6 +4,7 @@ use std::{sync::Mutex as StdMutex, time::Duration};
 
 use axum::{
     Json, Router,
+    extract::MatchedPath,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -22,6 +23,7 @@ const API_KEY: &str = "offline-fixture-api-key";
 const REPOSITORY: &str = "github.com/example/project";
 const ATTESTATIONS: &str = "/v0/attestations";
 const REGISTRATIONS: &str = "/v0/rule-registrations";
+const RULE_SETS: &str = "/v0/rule-set-registrations";
 const INVALID: &str = "invalid.jwt.fixture";
 
 struct SigningFixture {
@@ -141,11 +143,17 @@ async fn ledger_endpoint() -> (Server, LedgerRequests) {
 
     async fn register(
         State(records): State<LedgerRequests>,
+        path: MatchedPath,
         headers: HeaderMap,
         Json(body): Json<Value>,
     ) -> impl IntoResponse {
         assert!(!headers.contains_key("authorization"));
-        let outcomes: Vec<_> = body["rules"].as_array().unwrap().iter().map(|_| {
+        let collection = if path.as_str() == RULE_SETS {
+            "sets"
+        } else {
+            "rules"
+        };
+        let outcomes: Vec<_> = body[collection].as_array().unwrap().iter().map(|_| {
             json!({"outcome": "created", "digest": format!("v1:sha256:{}", "a".repeat(64))})
         }).collect();
         records.lock().unwrap().push(body);
@@ -156,6 +164,7 @@ async fn ledger_endpoint() -> (Server, LedgerRequests) {
     let router = Router::new()
         .route(ATTESTATIONS, post(attest))
         .route(REGISTRATIONS, post(register))
+        .route(RULE_SETS, post(register))
         .with_state(requests.clone());
     (Server::start(router).await, requests)
 }
@@ -216,6 +225,19 @@ fn registration(sources: &[&str]) -> Value {
         })
     }).collect();
     json!({"commit": "0123456789abcdef0123456789abcdef01234567", "rules": rules})
+}
+
+fn rule_set_registration(source: &str, member_source: &str) -> Value {
+    json!({
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "sets": [{
+            "source": source, "path": ".", "id": "baseline", "version": "1.0",
+            "members": [{
+                "source": member_source, "path": ".", "id": "verify", "version": "2.0",
+                "digest": format!("v1:sha256:{}", "a".repeat(64)), "enabled": true
+            }]
+        }]
+    })
 }
 
 async fn submit(
@@ -336,7 +358,7 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
     let (endpoint, key_requests) = key_endpoint(&fixture).await;
     let (ledger, requests) = ledger_endpoint().await;
     let oidc = verifier("example/*", format!("{}/jwks", endpoint.url));
-    let gateway = gateway(oidc, &ledger.url, 2, Duration::from_secs(2)).await;
+    let gateway = gateway(oidc, &ledger.url, 3, Duration::from_secs(2)).await;
 
     let token = fixture.token("Example/Project");
     submit(
@@ -355,6 +377,15 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
         StatusCode::OK,
     )
     .await;
+    let other = "github.com/example/other";
+    submit(
+        &gateway,
+        RULE_SETS,
+        &token,
+        rule_set_registration(REPOSITORY, other),
+        StatusCode::OK,
+    )
+    .await;
     let token = fixture.token("example/project");
     let headers = submit(
         &gateway,
@@ -365,7 +396,6 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
     )
     .await;
     assert!(headers.contains_key("retry-after"));
-    let other = "github.com/example/other";
     submit(
         &gateway,
         ATTESTATIONS,
@@ -400,18 +430,20 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
     .await;
 
     let records = requests.lock().unwrap();
-    assert_eq!(records.len(), 5);
+    assert_eq!(records.len(), 6);
     assert_eq!(records[0]["sender"], REPOSITORY);
     assert_eq!(records[1]["sender"], REPOSITORY);
     assert_eq!(records[1]["rules"][0]["source"], REPOSITORY);
-    assert_eq!(records[2]["sender"], other);
-    assert_eq!(records[3]["sender"], "fixture");
+    assert_eq!(records[2]["sender"], REPOSITORY);
+    assert_eq!(records[2]["sets"][0]["members"][0]["source"], other);
+    assert_eq!(records[3]["sender"], other);
     assert_eq!(records[4]["sender"], "fixture");
+    assert_eq!(records[5]["sender"], "fixture");
     assert_eq!(key_requests.lock().unwrap().requests, 1);
 }
 
 #[tokio::test]
-async fn rejects_repository_mismatches_before_forwarding_either_ingest_request() {
+async fn rejects_repository_mismatches_before_forwarding_any_ingest_request() {
     let fixture = SigningFixture::first();
     let (endpoint, _) = key_endpoint(&fixture).await;
     let (ledger, requests) = ledger_endpoint().await;
@@ -436,6 +468,12 @@ async fn rejects_repository_mismatches_before_forwarding_either_ingest_request()
         StatusCode::FORBIDDEN,
     )
     .await;
+    let mut batch = rule_set_registration(REPOSITORY, other);
+    batch["sets"]
+        .as_array_mut()
+        .unwrap()
+        .push(rule_set_registration(other, REPOSITORY)["sets"][0].clone());
+    submit(&gateway, RULE_SETS, &token, batch, StatusCode::FORBIDDEN).await;
     let headers = submit(
         &gateway,
         ATTESTATIONS,

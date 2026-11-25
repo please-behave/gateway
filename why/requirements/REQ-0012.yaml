@@ -1,15 +1,18 @@
 id: REQ-0012
-name: Forward rule registrations and report ledger outcomes
+name: Forward rule and Rule Set registrations and report ledger outcomes
 description: >-
   The gateway must submit a validated registration batch once, with its
   registering commit and the authenticated sender, to the
-  configured ledger. It must return one validated ledger outcome and digest per
-  submitted rule in request order. It must apply the same ledger failure
+  configured ledger. It must return one validated ledger outcome per
+  submitted rule or Rule Set in request order. Each outcome includes a digest
+  or, for a Rule Set with unresolved or mismatching members, the list of member
+  failures. It must apply the same ledger failure
   mapping and safe logging as attestation ingest, without persisting
   submissions, retrying, or following redirects.
-rationale: Senders need the registry's decision on each submitted rule version.
+rationale: Senders need the registry's decision on each submitted rule or Rule Set version.
 decisions:
   - DEC-0001
   - DEC-0002
   - DEC-0007
   - why:DEC-0012
+  - why:DEC-0017

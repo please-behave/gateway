@@ -2,7 +2,7 @@ id: REQ-0006
 name: Apply an independent ingest rate limit to each authenticated identity
 description: >-
   Each gateway instance must apply a configurable in-memory rate limit shared
-  across both ingest endpoints. Track each API key and each normalized
+  across all public ingest endpoints. Track each API key and each normalized
   GitHub OIDC repository independently of the client address or forwarded
   headers. Return 429 with Retry-After when the allowance is exceeded.
 rationale: A sender's traffic must have bounded impact while instances scale independently.

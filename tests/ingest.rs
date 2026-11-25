@@ -943,3 +943,195 @@ fn maps_registration_ledger_failures_and_rejects_invalid_receipts() {
     );
     assert!(ledger.requests.try_recv().is_ok());
 }
+
+const RULE_SET_PATH: &str = "/v0/rule-set-registrations";
+
+fn rule_set_registration() -> Value {
+    json!({
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "sets": [{
+            "source": "github.com/example/sets",
+            "path": ".",
+            "id": "baseline",
+            "version": "1.0",
+            "name": "Baseline",
+            "description": "Read this as data.\r\n<example>",
+            "knowledge": {
+                "purpose": "Explain the baseline.\r\nSecond line.",
+                "audience": "Shared repositories",
+                "commonality": "Repository conventions",
+                "rules": [{"rule": "verify", "role": "Check verification."}],
+                "admission": ["Checks repository conventions."],
+                "execution_points": "Run during check."
+            },
+            "members": [{
+                "source": "github.com/example/rules",
+                "path": "rules/verify",
+                "id": "verify",
+                "version": "2.1",
+                "digest": outcome("created", "a")["digest"],
+                "enabled": false
+            }]
+        }]
+    })
+}
+
+#[test]
+fn forwards_rule_sets_and_returns_all_ledger_outcomes_in_order() {
+    let mut batch = rule_set_registration();
+    let sets = batch["sets"].as_array_mut().unwrap();
+    let mut rejected = sets[0].clone();
+    rejected["members"].as_array_mut().unwrap().push(json!({
+        "source": "git.example.com/team/rules",
+        "path": ".",
+        "id": "other",
+        "version": "0.1",
+        "digest": outcome("created", "b")["digest"],
+        "enabled": true
+    }));
+    for id in ["unchanged", "conflict", "invalid_members"] {
+        let mut set = if id == "invalid_members" {
+            rejected.clone()
+        } else {
+            sets[0].clone()
+        };
+        set["id"] = json!(id);
+        set.as_object_mut().unwrap().remove("knowledge");
+        sets.push(set);
+    }
+    let expected = json!({"outcomes": [
+        outcome("created", "1"),
+        outcome("unchanged", "2"),
+        outcome("conflict", "3"),
+        {"outcome": "invalid_members", "failures": [
+            {"member_index": 0, "reason": "unregistered"},
+            {"member_index": 1, "reason": "digest_mismatch"}
+        ]}
+    ]});
+    let ledger = LedgerStub::reply(200, &expected.to_string());
+    let gateway = start_with_ledger(&entry("build", FIRST_KEY), 1, 8192, 1000, ledger.address);
+    let response = post(
+        &gateway,
+        RULE_SET_PATH,
+        Some(FIRST_KEY),
+        "X-Sender: impersonator\r\n",
+        &batch.to_string(),
+    );
+    expect_status(&response, 200);
+    let receipt: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+    assert_eq!(receipt, expected);
+
+    let (headers, body) = ledger.requests.try_recv().unwrap();
+    assert_eq!(headers[0], "POST /v0/rule-set-registrations HTTP/1.1");
+    assert!(headers.iter().all(|header| !header.contains(FIRST_KEY)));
+    let forwarded: Value = serde_json::from_slice(&body).unwrap();
+    batch["sender"] = json!("build");
+    assert_eq!(forwarded, batch);
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn rejects_invalid_rule_set_batches_without_forwarding() {
+    let ledger = LedgerStub::reply(500, "");
+    let gateway = start_with_ledger(
+        &entry("build", FIRST_KEY),
+        30,
+        128 * 1024,
+        1000,
+        ledger.address,
+    );
+    let valid = rule_set_registration();
+    let mut invalid = vec![
+        "{".to_string(),
+        valid
+            .to_string()
+            .replace(r#""enabled":false"#, r#""enabled":true,"enabled":false"#),
+    ];
+    for (pointer, value) in [
+        ("/commit", json!("abcd")),
+        ("/sets", json!([])),
+        ("/sets", json!(vec![valid["sets"][0].clone(); 101])),
+        ("/sets/0/name", json!("é".repeat(81))),
+        ("/sets/0/description", json!("a".repeat(65537))),
+        ("/sets/0/knowledge", json!({"purpose": "incomplete"})),
+        (
+            "/sets/0/knowledge/rules/0",
+            json!({"rule": "verify", "role": "Checks.", "unknown": true}),
+        ),
+        (
+            "/sets/0/members",
+            json!(vec![valid["sets"][0]["members"][0].clone(); 257]),
+        ),
+        (
+            "/sets/0/members/0/source",
+            json!("github.com:443/example/rules"),
+        ),
+        ("/sets/0/members/0/path", json!("rules/../verify")),
+        ("/sets/0/members/0/version", json!("02.1")),
+        (
+            "/sets/0/members/0/digest",
+            outcome("created", "A")["digest"].clone(),
+        ),
+        ("/sets/0/members/0/enabled", json!("false")),
+    ] {
+        let mut batch = valid.clone();
+        *batch.pointer_mut(pointer).unwrap() = value;
+        invalid.push(batch.to_string());
+    }
+    for pointer in ["", "/sets/0", "/sets/0/members/0"] {
+        let mut batch = valid.clone();
+        batch.pointer_mut(pointer).unwrap()["sender"] = json!("impersonator");
+        invalid.push(batch.to_string());
+    }
+    for body in invalid {
+        expect_status(
+            &post(&gateway, RULE_SET_PATH, Some(FIRST_KEY), "", &body),
+            400,
+        );
+    }
+
+    for (auth, expected) in [
+        (String::new(), 401),
+        (format!("Authorization: Bearer {FIRST_KEY}\r\n"), 413),
+    ] {
+        let response = request(
+            gateway.address,
+            &format!(
+                "POST {RULE_SET_PATH} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n{auth}Content-Length: 131073\r\n\r\n"
+            ),
+        );
+        expect_status(&response, expected);
+    }
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn rejects_invalid_rule_set_ledger_receipts() {
+    let mut batch = rule_set_registration();
+    let mut second = batch["sets"][0]["members"][0].clone();
+    second["id"] = json!("second");
+    batch["sets"][0]["members"]
+        .as_array_mut()
+        .unwrap()
+        .push(second);
+    let body = batch.to_string();
+    let failure =
+        |failures| json!({"outcomes": [{"outcome": "invalid_members", "failures": failures}]});
+    let member = json!({"member_index": 0, "reason": "unregistered"});
+    for receipt in [
+        json!({"outcomes": []}),
+        failure(json!([])),
+        failure(json!([{"member_index": 2, "reason": "unregistered"}])),
+        failure(json!([{"member_index": 0, "reason": "unknown"}])),
+        failure(json!([member, member])),
+        json!({"outcomes": [{"outcome": "created", "digest": "invalid"}]}),
+    ] {
+        let ledger = LedgerStub::reply(200, &receipt.to_string());
+        let gateway = start_with_ledger(&entry("build", FIRST_KEY), 1, 8192, 1000, ledger.address);
+        expect_status(
+            &post(&gateway, RULE_SET_PATH, Some(FIRST_KEY), "", &body),
+            502,
+        );
+        assert!(ledger.requests.try_recv().is_ok());
+    }
+}

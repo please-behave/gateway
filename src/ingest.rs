@@ -29,7 +29,7 @@ use crate::{
     github_oidc::{self, AuthenticationError, GitHubOidc, GitHubOidcConfig},
     ledger::{AttestationReceipt, Ledger},
     optional, positive,
-    registration::{self, RegistrationReceipt},
+    registration::{MAX_LEDGER_BODY_BYTES, RegistrationKind},
 };
 
 const SCHEMA: &[u8] = include_bytes!("../why/contracts/ingest/attestation.schema.json");
@@ -171,6 +171,7 @@ struct Ingest {
     requests_per_minute: usize,
     validator: jsonschema::Validator,
     registration_validator: jsonschema::Validator,
+    rule_set_registration_validator: jsonschema::Validator,
     ledger: Ledger,
     request_timeout: Duration,
 }
@@ -287,30 +288,33 @@ pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHub
         repository_windows: Mutex::default(),
         requests_per_minute: config.ingest.requests_per_minute,
         validator,
-        registration_validator: registration::validator(),
+        registration_validator: RegistrationKind::Rules.validator(),
+        rule_set_registration_validator: RegistrationKind::RuleSets.validator(),
         ledger,
         request_timeout: config.request_timeout,
     });
 
     let admission = middleware::from_fn_with_state(state.clone(), admit);
-    Router::new()
-        .route(
-            "/v0/attestations",
-            post(attest)
-                .route_layer(RequestBodyLimitLayer::new(config.max_body_bytes))
-                .route_layer(admission.clone()),
-        )
-        .route(
-            "/v0/rule-registrations",
+    let mut router = Router::new().route(
+        "/v0/attestations",
+        post(attest)
+            .route_layer(RequestBodyLimitLayer::new(config.max_body_bytes))
+            .route_layer(admission.clone()),
+    );
+
+    for kind in [RegistrationKind::Rules, RegistrationKind::RuleSets] {
+        router = router.route(
+            kind.path(),
             post(register)
+                .route_layer(axum::Extension(kind))
                 .route_layer(RequestBodyLimitLayer::new(
-                    config
-                        .max_body_bytes
-                        .min(registration::MAX_LEDGER_BODY_BYTES),
+                    config.max_body_bytes.min(MAX_LEDGER_BODY_BYTES),
                 ))
-                .route_layer(admission),
-        )
-        .with_state(state)
+                .route_layer(admission.clone()),
+        );
+    }
+
+    router.with_state(state)
 }
 
 async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Next) -> Response {
@@ -401,7 +405,7 @@ async fn attest(
         ("sender", admitted.sender.to_string().into()),
         ("attestation", canonical_attestation(attestation)),
     ]);
-    let request = state.ledger.request::<AttestationReceipt>().json(&envelope);
+    let request = state.ledger.request(&AttestationReceipt).json(&envelope);
     Ledger::deliver(request, admitted.deadline, &request_id, AttestationReceipt).await
 }
 
@@ -414,15 +418,20 @@ async fn register(
     State(state): State<Arc<Ingest>>,
     axum::Extension(admitted): axum::Extension<Admitted>,
     axum::Extension(request_id): axum::Extension<RequestId>,
+    axum::Extension(kind): axum::Extension<RegistrationKind>,
     request: Request,
 ) -> Response {
     let bytes = match read_body(request, admitted.deadline).await {
         Ok(bytes) => bytes,
         Err(status) => return status.into_response(),
     };
-    let (body, receipt) = match registration::envelope(
+    let validator = match kind {
+        RegistrationKind::Rules => &state.registration_validator,
+        RegistrationKind::RuleSets => &state.rule_set_registration_validator,
+    };
+    let (body, receipt) = match kind.envelope(
         &bytes,
-        &state.registration_validator,
+        validator,
         &admitted.sender,
         admitted.required_repository(),
     ) {
@@ -435,7 +444,7 @@ async fn register(
 
     let request = state
         .ledger
-        .request::<RegistrationReceipt>()
+        .request(&receipt)
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .body(body);
     Ledger::deliver(request, admitted.deadline, &request_id, receipt).await

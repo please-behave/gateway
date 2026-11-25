@@ -17,7 +17,7 @@ including keys that would collide under the ledger's newline normalization.
 
 The gateway authenticates using an API key or GitHub OIDC, applies the
 per-instance rate limit for the key or GitHub OIDC repository, checks the body
-size and validates the whole batch in that order. Both public ingest endpoints
+size and validates the whole batch in that order. All public ingest endpoints
 share the allowance for that identity. For GitHub OIDC the sender is the
 verified repository, normalized to lowercase as `github.com/<owner>/<name>`.
 Every rule's `source` must equal that sender before any rule is forwarded.
