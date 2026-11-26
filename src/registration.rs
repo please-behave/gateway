@@ -17,6 +17,7 @@ use crate::ledger::{MAX_LEDGER_BODY_BYTES, Receipt};
 pub(crate) enum RegistrationKind {
     Rules,
     RuleSets,
+    Targets,
 }
 
 impl RegistrationKind {
@@ -24,6 +25,7 @@ impl RegistrationKind {
         match self {
             Self::Rules => "/v0/rule-registrations",
             Self::RuleSets => "/v0/rule-set-registrations",
+            Self::Targets => "/v0/target-registrations",
         }
     }
 
@@ -32,6 +34,9 @@ impl RegistrationKind {
             Self::Rules => include_bytes!("../why/contracts/ingest/rule-registration.schema.json"),
             Self::RuleSets => {
                 include_bytes!("../why/contracts/ingest/rule-set-registration.schema.json")
+            }
+            Self::Targets => {
+                include_bytes!("../why/contracts/ingest/target-registration.schema.json")
             }
         };
         let schema = serde_json::from_slice(bytes).expect("bundled registration schema is JSON");
@@ -54,10 +59,12 @@ impl RegistrationKind {
         let items = match self {
             Self::Rules => &request["rules"],
             Self::RuleSets => &request["sets"],
+            Self::Targets => &request["targets"],
         }
         .as_array()
         .expect("validated registration array");
-        if !items.iter().all(valid_source) {
+        let has_source = !matches!(self, Self::Targets);
+        if has_source && !items.iter().all(valid_source) {
             return Err(StatusCode::BAD_REQUEST);
         }
         let receipt = match self {
@@ -73,9 +80,21 @@ impl RegistrationKind {
                 }
                 RegistrationReceipt::RuleSets(member_counts)
             }
+            Self::Targets => RegistrationReceipt::Targets(
+                items
+                    .iter()
+                    .map(|target| {
+                        target["name"]
+                            .as_str()
+                            .expect("validated target name")
+                            .to_owned()
+                    })
+                    .collect(),
+            ),
         };
 
-        if let Some(source) = required_source
+        if has_source
+            && let Some(source) = required_source
             && items
                 .iter()
                 .any(|item| item["source"].as_str() != Some(source))
@@ -105,6 +124,7 @@ fn valid_source(item: &Value) -> bool {
 pub(crate) enum RegistrationReceipt {
     Rules(usize),
     RuleSets(Vec<usize>),
+    Targets(Vec<String>),
 }
 
 impl Receipt for RegistrationReceipt {
@@ -114,12 +134,13 @@ impl Receipt for RegistrationReceipt {
         match self {
             Self::Rules(_) => RegistrationKind::Rules.path(),
             Self::RuleSets(_) => RegistrationKind::RuleSets.path(),
+            Self::Targets(_) => RegistrationKind::Targets.path(),
         }
     }
 
     fn max_bytes(&self) -> usize {
         match self {
-            Self::Rules(_) => 16 * 1024,
+            Self::Rules(_) | Self::Targets(_) => 16 * 1024,
             Self::RuleSets(_) => 2 * 1024 * 1024,
         }
     }
@@ -138,6 +159,14 @@ impl Receipt for RegistrationReceipt {
                 outcomes.len() == member_counts.len()
                     && outcomes.iter().zip(member_counts).all(|(outcome, count)| {
                         valid_outcome(outcome) || valid_member_failures(outcome, count)
+                    })
+            }
+            Self::Targets(names) => {
+                outcomes.len() == names.len()
+                    && outcomes.iter().zip(names).all(|(outcome, name)| {
+                        outcome.as_object().is_some_and(|object| object.len() == 2)
+                            && outcome["name"].as_str() == Some(name.as_str())
+                            && matches!(outcome["outcome"].as_str(), Some("created" | "unchanged"))
                     })
             }
         };

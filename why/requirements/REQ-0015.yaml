@@ -1,0 +1,14 @@
+id: REQ-0015
+name: Validate public deployment target registrations
+description: >-
+  The gateway must authenticate and apply the shared public ingest allowance
+  before validating the entire deployment target batch against the ingest
+  contract, including bounds, unique JSON keys and the absence of
+  client-supplied ownership. It must reject an invalid batch before forwarding.
+rationale: >-
+  The ledger receives only bounded, valid declarations attributable to an
+  authenticated owner.
+decisions:
+  - DEC-0001
+  - DEC-0007
+  - why:DEC-0022

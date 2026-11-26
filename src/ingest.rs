@@ -173,6 +173,7 @@ struct Ingest {
     validator: jsonschema::Validator,
     registration_validator: jsonschema::Validator,
     rule_set_registration_validator: jsonschema::Validator,
+    target_registration_validator: jsonschema::Validator,
     release_validator: jsonschema::Validator,
     ledger: Ledger,
     request_timeout: Duration,
@@ -294,6 +295,7 @@ pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHub
         validator,
         registration_validator: RegistrationKind::Rules.validator(),
         rule_set_registration_validator: RegistrationKind::RuleSets.validator(),
+        target_registration_validator: RegistrationKind::Targets.validator(),
         release_validator: jsonschema::validator_for(&release_schema)
             .expect("bundled release fact schema is valid"),
         ledger,
@@ -308,7 +310,11 @@ pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHub
             .route_layer(admission.clone()),
     );
 
-    for kind in [RegistrationKind::Rules, RegistrationKind::RuleSets] {
+    for kind in [
+        RegistrationKind::Rules,
+        RegistrationKind::RuleSets,
+        RegistrationKind::Targets,
+    ] {
         router = router.route(
             kind.path(),
             post(register)
@@ -443,6 +449,7 @@ async fn register(
     let validator = match kind {
         RegistrationKind::Rules => &state.registration_validator,
         RegistrationKind::RuleSets => &state.rule_set_registration_validator,
+        RegistrationKind::Targets => &state.target_registration_validator,
     };
     let (body, receipt) = match kind.envelope(
         &bytes,

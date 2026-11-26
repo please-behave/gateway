@@ -1,4 +1,4 @@
-//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010, REQ-0011, REQ-0012, REQ-0013, REQ-0014
+//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010, REQ-0011, REQ-0012, REQ-0013, REQ-0014, REQ-0015, REQ-0016
 
 mod support;
 
@@ -22,6 +22,9 @@ const RULE_IDENTITY: &str =
     r#""source":"github.com/example/rules","path":"rules/verify","id":"verify""#;
 const RECEIPT: &str = r#"{"id":"0198b0a7-46a8-7000-8000-000000000001"}"#;
 const RELEASE_PATH: &str = "/v0/facts/releases";
+const TARGETS_PATH: &str = "/v0/target-registrations";
+const TARGETS: &str = r#"{"targets":[{"name":"Live.eu","description":" Déploiement "},{"name":"staging_1"},{"name":"Live.eu"}]}"#;
+const TARGETS_RECEIPT: &str = r#"{"outcomes":[{"name":"Live.eu","outcome":"created"},{"name":"staging_1","outcome":"unchanged"},{"name":"Live.eu","outcome":"unchanged"}]}"#;
 const RELEASE_COMMIT: &str = "0123456789ABCDEF0123456789ABCDEF01234567";
 const RELEASE: &str = r#"{"repository":"git.example.org/team/project","version":"  Release 1  ","commit":"0123456789ABCDEF0123456789ABCDEF01234567"}"#;
 
@@ -177,6 +180,110 @@ fn expect_status(response: &str, status: u16) {
         assert_eq!(response.split_once("\r\n\r\n").unwrap().1, "", "{response}");
     }
     assert!(response.contains("\r\nx-request-id: "), "{response}");
+}
+
+#[test]
+fn forwards_target_registrations_once_with_the_api_key_owner_and_relays_ordered_outcomes() {
+    let ledger = LedgerStub::reply(200, TARGETS_RECEIPT);
+    let gateway = start_with_ledger(&entry("build", FIRST_KEY), 1, 1024, 1000, ledger.address);
+    let response = post(&gateway, TARGETS_PATH, Some(FIRST_KEY), "", TARGETS);
+    expect_status(&response, 200);
+    assert_eq!(
+        serde_json::from_str::<Value>(response.split_once("\r\n\r\n").unwrap().1).unwrap(),
+        serde_json::from_str::<Value>(TARGETS_RECEIPT).unwrap()
+    );
+    let (headers, body) = ledger
+        .requests
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(headers[0], "POST /v0/target-registrations HTTP/1.1");
+    assert!(
+        !headers
+            .iter()
+            .any(|line| line.starts_with("authorization:"))
+    );
+    let mut expected = serde_json::from_str::<Value>(TARGETS).unwrap();
+    expected["sender"] = json!("build");
+    assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), expected);
+    expect_status(&submit(&gateway, Some(FIRST_KEY), "", VALID), 429);
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn rejects_unauthenticated_invalid_and_oversized_target_registrations_before_delivery() {
+    let ledger = LedgerStub::reply(200, TARGETS_RECEIPT);
+    let gateway = start_with_ledger(&entry("build", FIRST_KEY), 20, 4096, 1000, ledger.address);
+    for key in [None, Some(SECOND_KEY)] {
+        let response = post(&gateway, TARGETS_PATH, key, "", TARGETS);
+        expect_status(&response, 401);
+        assert!(response.contains("\r\nwww-authenticate: Bearer\r\n"));
+    }
+    for invalid in [
+        "{".to_owned(),
+        TARGETS.replacen('{', r#"{"sender":"another-owner","#, 1),
+        TARGETS.replace(
+            r#""name":"Live.eu""#,
+            r#""name":"Live.eu","owner":"another-owner""#,
+        ),
+        TARGETS.replace(r#""name":"Live.eu""#, r#""name":"Live.eu","name":"spoof""#),
+        TARGETS.replace("staging_1", "-staging"),
+        TARGETS.replace("staging_1", r#"staging\n"#),
+        TARGETS.replace("staging_1", &"a".repeat(65)),
+        TARGETS.replace(" Déploiement ", r#"description\u0000"#),
+        TARGETS.replace(" Déploiement ", ""),
+        TARGETS.replace(" Déploiement ", &"ö".repeat(513)),
+        json!({"targets": []}).to_string(),
+        json!({"targets": vec![json!({"name": "a"}); 101]}).to_string(),
+    ] {
+        expect_status(
+            &post(&gateway, TARGETS_PATH, Some(FIRST_KEY), "", &invalid),
+            400,
+        );
+    }
+    expect_status(
+        &post(
+            &gateway,
+            TARGETS_PATH,
+            Some(FIRST_KEY),
+            "",
+            &format!("{TARGETS:>4097}"),
+        ),
+        413,
+    );
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn reports_target_registration_delivery_failures() {
+    let unavailable = start_ingest(&entry("build", FIRST_KEY), 1, 1024);
+    expect_status(
+        &post(&unavailable, TARGETS_PATH, Some(FIRST_KEY), "", TARGETS),
+        503,
+    );
+
+    for (status, receipt, expected) in [
+        (500, TARGETS_RECEIPT.to_owned(), 503),
+        (201, TARGETS_RECEIPT.to_owned(), 502),
+        (200, r#"{"outcomes":[]}"#.to_owned(), 502),
+        (
+            200,
+            TARGETS_RECEIPT.replacen("Live.eu", "staging_1", 1),
+            502,
+        ),
+        (200, TARGETS_RECEIPT.replace("created", "conflict"), 502),
+    ] {
+        let ledger = LedgerStub::reply(status, &receipt);
+        let gateway = start_with_ledger(&entry("build", FIRST_KEY), 1, 1024, 1000, ledger.address);
+        expect_status(
+            &post(&gateway, TARGETS_PATH, Some(FIRST_KEY), "", TARGETS),
+            expected,
+        );
+        ledger
+            .requests
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert!(ledger.requests.try_recv().is_err());
+    }
 }
 
 #[test]

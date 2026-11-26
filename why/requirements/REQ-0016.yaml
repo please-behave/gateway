@@ -1,0 +1,13 @@
+id: REQ-0016
+name: Forward deployment target registrations and report ledger outcomes
+description: >-
+  The gateway must forward each valid deployment target batch once with the
+  authenticated sender as owner. It must relay the ledger's validated outcome
+  for every target in request order and report delivery failures using the
+  existing ingest error mapping. It must neither persist nor retry the batch.
+rationale: >-
+  CI workflows need to distinguish targets accepted by the ledger from
+  delivery failures while the ledger owns registration state.
+decisions:
+  - DEC-0002
+  - why:DEC-0022
