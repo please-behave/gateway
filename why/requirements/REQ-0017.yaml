@@ -1,0 +1,15 @@
+id: REQ-0017
+name: Validate public deployment facts
+description: >-
+  The gateway must validate each public deployment fact against its ingest
+  schema and reject duplicate JSON keys. A report identifies a target name
+  and a subject repository with exactly one of a version or a full commit.
+  Both ingest authentication methods may report any subject repository.
+  The request cannot supply the target owner, sender or authentication method.
+rationale: >-
+  An infrastructure repository can deploy another repository's software while
+  authenticated attribution determines who owns the target.
+decisions:
+  - DEC-0005
+  - why:DEC-0022
+  - why:DEC-0023

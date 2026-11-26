@@ -1,0 +1,14 @@
+id: REQ-0018
+name: Forward deployment facts and report ledger outcomes
+description: >-
+  The gateway must forward each valid deployment fact once with the authenticated
+  sender and authentication method. It must relay the ledger's recorded,
+  unchanged and unknown-target outcomes and report delivery failures using
+  the ingest error mapping. It must neither persist nor retry the report.
+rationale: >-
+  Senders need the ledger's decision on each report while the ledger owns
+  target registration and deployment history.
+decisions:
+  - DEC-0002
+  - DEC-0005
+  - why:DEC-0023

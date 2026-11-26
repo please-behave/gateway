@@ -1,4 +1,4 @@
-//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010, REQ-0011, REQ-0012, REQ-0013, REQ-0014, REQ-0015, REQ-0016
+//! REQ-0002, REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0008, REQ-0009, REQ-0010, REQ-0011, REQ-0012, REQ-0013, REQ-0014, REQ-0015, REQ-0016, REQ-0017, REQ-0018
 
 mod support;
 
@@ -22,6 +22,9 @@ const RULE_IDENTITY: &str =
     r#""source":"github.com/example/rules","path":"rules/verify","id":"verify""#;
 const RECEIPT: &str = r#"{"id":"0198b0a7-46a8-7000-8000-000000000001"}"#;
 const RELEASE_PATH: &str = "/v0/facts/releases";
+const DEPLOYMENT_PATH: &str = "/v0/facts/deployments";
+const DEPLOYMENT: &str =
+    r#"{"target":"Live.eu","repository":"git.example.org/team/project","version":"  Release 1  "}"#;
 const TARGETS_PATH: &str = "/v0/target-registrations";
 const TARGETS: &str = r#"{"targets":[{"name":"Live.eu","description":" Déploiement "},{"name":"staging_1"},{"name":"Live.eu"}]}"#;
 const TARGETS_RECEIPT: &str = r#"{"outcomes":[{"name":"Live.eu","outcome":"created"},{"name":"staging_1","outcome":"unchanged"},{"name":"Live.eu","outcome":"unchanged"}]}"#;
@@ -282,6 +285,114 @@ fn reports_target_registration_delivery_failures() {
             .requests
             .recv_timeout(Duration::from_secs(1))
             .unwrap();
+        assert!(ledger.requests.try_recv().is_err());
+    }
+}
+
+#[test]
+fn forwards_deployment_facts_once_and_relays_ledger_outcomes() {
+    for (status, receipt) in [
+        (201, r#"{"outcome":"created"}"#),
+        (200, r#"{"outcome":"unchanged"}"#),
+        (400, ""),
+    ] {
+        let ledger = LedgerStub::reply(status, receipt);
+        let gateway = start_with_ledger(&entry("build", FIRST_KEY), 1, 1024, 1000, ledger.address);
+        let body = if status == 200 {
+            json!({
+                "target": "Live.eu",
+                "repository": "git.example.org/team/project",
+                "commit": "ABCDEF01".repeat(8),
+            })
+            .to_string()
+        } else {
+            DEPLOYMENT.to_owned()
+        };
+        let response = post(&gateway, DEPLOYMENT_PATH, Some(FIRST_KEY), "", &body);
+        expect_status(&response, status);
+        assert_eq!(response.split_once("\r\n\r\n").unwrap().1, receipt);
+
+        let (headers, forwarded) = ledger.requests.try_recv().unwrap();
+        assert_eq!(headers[0], "POST /v0/facts/deployments HTTP/1.1");
+        assert!(
+            !headers
+                .iter()
+                .any(|header| header.starts_with("authorization:"))
+        );
+        let mut expected: Value = serde_json::from_str(&body).unwrap();
+        expected["sender"] = "build".into();
+        expected["auth_method"] = "api_key".into();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&forwarded).unwrap(),
+            expected
+        );
+        expect_status(&submit(&gateway, Some(FIRST_KEY), "", VALID), 429);
+        assert!(ledger.requests.try_recv().is_err());
+    }
+}
+
+#[test]
+fn rejects_unauthenticated_invalid_and_oversized_deployments_before_delivery() {
+    let ledger = LedgerStub::reply(201, r#"{"outcome":"created"}"#);
+    let invalid = [
+        "{".to_owned(),
+        DEPLOYMENT.replacen('{', &format!(r#"{{"commit":"{RELEASE_COMMIT}","#), 1),
+        DEPLOYMENT.replace(r#","version":"  Release 1  ""#, ""),
+        DEPLOYMENT.replace(r#""version":"  Release 1  ""#, r#""commit":"01234567""#),
+        DEPLOYMENT.replace("Live.eu", r"Live.eu\n"),
+        DEPLOYMENT.replace("git.example.org/team/project", ""),
+        DEPLOYMENT.replace("  Release 1  ", &"é".repeat(257)),
+        DEPLOYMENT.replace("  Release 1  ", r"release\u0000"),
+        DEPLOYMENT.replacen('{', r#"{"target":"duplicate","#, 1),
+        DEPLOYMENT.replacen('{', r#"{"owner":"forged","#, 1),
+        DEPLOYMENT.replacen('{', r#"{"sender":"forged","#, 1),
+        DEPLOYMENT.replacen('{', r#"{"auth_method":"github_oidc","#, 1),
+    ];
+    let gateway = start_with_ledger(
+        &entry("build", FIRST_KEY),
+        invalid.len() + 1,
+        4096,
+        1000,
+        ledger.address,
+    );
+    for credential in [None, Some(SECOND_KEY)] {
+        let response = post(&gateway, DEPLOYMENT_PATH, credential, "", DEPLOYMENT);
+        expect_status(&response, 401);
+        assert!(response.contains("\r\nwww-authenticate: Bearer\r\n"));
+    }
+    for body in invalid {
+        expect_status(
+            &post(&gateway, DEPLOYMENT_PATH, Some(FIRST_KEY), "", &body),
+            400,
+        );
+    }
+    let oversized = " ".repeat(4097);
+    expect_status(
+        &post(&gateway, DEPLOYMENT_PATH, Some(FIRST_KEY), "", &oversized),
+        413,
+    );
+    let limited = submit(&gateway, Some(FIRST_KEY), "", VALID);
+    expect_status(&limited, 429);
+    assert!(limited.contains("\r\nretry-after: "));
+    assert!(ledger.requests.try_recv().is_err());
+}
+
+#[test]
+fn reports_invalid_deployment_receipts_and_delivery_failures() {
+    for (status, receipt, expected) in [
+        (500, "failure", 503),
+        (400, "unexpected rejection", 502),
+        (409, r#"{"outcome":"conflict"}"#, 502),
+        (200, r#"{"outcome":"created"}"#, 502),
+        (201, r#"{"outcome":"created","outcome":"created"}"#, 502),
+    ] {
+        let ledger = LedgerStub::reply(status, receipt);
+        let gateway = start_with_ledger(&entry("build", FIRST_KEY), 1, 1024, 1000, ledger.address);
+        expect_status(
+            &post(&gateway, DEPLOYMENT_PATH, Some(FIRST_KEY), "", DEPLOYMENT),
+            expected,
+        );
+        assert!(ledger.requests.try_recv().is_ok());
         assert!(ledger.requests.try_recv().is_err());
     }
 }

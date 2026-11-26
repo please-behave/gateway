@@ -35,7 +35,7 @@ API keys and GitHub OIDC can be enabled independently. With GitHub OIDC enabled,
 
 For GitHub OIDC the gateway uses `github.com/<owner>/<name>` in lowercase as the sender. The attestation repository and every registered rule or Rule Set source must equal that sender. Write access to an allowed repository confers authority to register versions for its own source.
 
-See the public ingest contracts for [attestations](why/contracts/ingest/attestation.md), [rule registrations](why/contracts/ingest/rule-registration.md), [Rule Set registrations](why/contracts/ingest/rule-set-registration.md), and [deployment target registrations](why/contracts/ingest/target-registration.md).
+See the public ingest contracts for [attestations](why/contracts/ingest/attestation.md), [rule registrations](why/contracts/ingest/rule-registration.md), [Rule Set registrations](why/contracts/ingest/rule-set-registration.md), [deployment target registrations](why/contracts/ingest/target-registration.md), and [deployment facts](why/contracts/ingest/deployment-fact.md).
 
 ## Health endpoints
 

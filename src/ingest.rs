@@ -27,13 +27,15 @@ use tower_http::{limit::RequestBodyLimitLayer, request_id::RequestId};
 use crate::{
     Config,
     github_oidc::{self, AuthenticationError, GitHubOidc, GitHubOidcConfig},
-    ledger::{AttestationReceipt, Ledger, MAX_LEDGER_BODY_BYTES, RELEASE_PATH, ReleaseReceipt},
+    ledger::{AttestationReceipt, FactReceipt, Ledger, MAX_LEDGER_BODY_BYTES, Receipt},
     optional, positive,
     registration::{RegistrationKind, StrictJson},
 };
 
 const SCHEMA: &[u8] = include_bytes!("../why/contracts/ingest/attestation.schema.json");
 const RELEASE_SCHEMA: &[u8] = include_bytes!("../why/contracts/ingest/release-fact.schema.json");
+const DEPLOYMENT_SCHEMA: &[u8] =
+    include_bytes!("../why/contracts/ingest/deployment-fact.schema.json");
 const RATE_WINDOW: Duration = Duration::from_secs(60);
 const DEFAULT_REQUESTS_PER_MINUTE: usize = 60;
 
@@ -175,6 +177,7 @@ struct Ingest {
     rule_set_registration_validator: jsonschema::Validator,
     target_registration_validator: jsonschema::Validator,
     release_validator: jsonschema::Validator,
+    deployment_validator: jsonschema::Validator,
     ledger: Ledger,
     request_timeout: Duration,
 }
@@ -278,6 +281,8 @@ pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHub
         jsonschema::validator_for(&schema).expect("bundled attestation schema is valid");
     let Json(release_schema) =
         Json::from_bytes(RELEASE_SCHEMA).expect("bundled release fact schema is JSON");
+    let Json(deployment_schema) =
+        Json::from_bytes(DEPLOYMENT_SCHEMA).expect("bundled deployment fact schema is JSON");
     let state = Arc::new(Ingest {
         keys: config
             .ingest
@@ -298,6 +303,8 @@ pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHub
         target_registration_validator: RegistrationKind::Targets.validator(),
         release_validator: jsonschema::validator_for(&release_schema)
             .expect("bundled release fact schema is valid"),
+        deployment_validator: jsonschema::validator_for(&deployment_schema)
+            .expect("bundled deployment fact schema is valid"),
         ledger,
         request_timeout: config.request_timeout,
     });
@@ -326,16 +333,18 @@ pub(crate) fn routes(config: &Config, ledger: Ledger, github_oidc: Option<GitHub
         );
     }
 
-    router
-        .route(
-            RELEASE_PATH,
-            post(record_release)
+    for receipt in [FactReceipt::Release, FactReceipt::Deployment] {
+        router = router.route(
+            receipt.path(),
+            post(record_fact)
+                .route_layer(axum::Extension(receipt))
                 .route_layer(RequestBodyLimitLayer::new(
                     config.max_body_bytes.min(MAX_LEDGER_BODY_BYTES),
                 ))
-                .route_layer(admission),
-        )
-        .with_state(state)
+                .route_layer(admission.clone()),
+        );
+    }
+    router.with_state(state)
 }
 
 async fn admit(State(state): State<Arc<Ingest>>, mut request: Request, next: Next) -> Response {
@@ -472,10 +481,11 @@ async fn register(
     Ledger::deliver(request, admitted.deadline, &request_id, receipt).await
 }
 
-async fn record_release(
+async fn record_fact(
     State(state): State<Arc<Ingest>>,
     axum::Extension(admitted): axum::Extension<Admitted>,
     axum::Extension(request_id): axum::Extension<RequestId>,
+    axum::Extension(receipt): axum::Extension<FactReceipt>,
     request: Request,
 ) -> Response {
     let bytes = match read_body(request, admitted.deadline).await {
@@ -485,10 +495,15 @@ async fn record_release(
     let Ok(StrictJson(mut fact)) = serde_json::from_slice(&bytes) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    if !state.release_validator.is_valid(&fact) {
+    let validator = match receipt {
+        FactReceipt::Release => &state.release_validator,
+        FactReceipt::Deployment => &state.deployment_validator,
+    };
+    if !validator.is_valid(&fact) {
         return StatusCode::BAD_REQUEST.into_response();
     }
-    if let Some(repository) = admitted.required_repository()
+    if matches!(receipt, FactReceipt::Release)
+        && let Some(repository) = admitted.required_repository()
         && fact["repository"].as_str() != Some(repository)
     {
         return StatusCode::FORBIDDEN.into_response();
@@ -504,8 +519,8 @@ async fn record_release(
     };
     fact["sender"] = admitted.sender.as_ref().into();
     fact["auth_method"] = auth_method.into();
-    let request = state.ledger.request(&ReleaseReceipt).json(&fact);
-    Ledger::deliver(request, admitted.deadline, &request_id, ReleaseReceipt).await
+    let request = state.ledger.request(&receipt).json(&fact);
+    Ledger::deliver(request, admitted.deadline, &request_id, receipt).await
 }
 
 async fn read_body(request: Request, deadline: Deadline) -> Result<Bytes, StatusCode> {

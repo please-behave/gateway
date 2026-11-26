@@ -1,4 +1,4 @@
-//! REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0011, REQ-0012, REQ-0013, REQ-0014, REQ-0015, REQ-0016
+//! REQ-0003, REQ-0005, REQ-0006, REQ-0007, REQ-0011, REQ-0012, REQ-0013, REQ-0014, REQ-0015, REQ-0016, REQ-0017, REQ-0018
 
 use std::{sync::Mutex as StdMutex, time::Duration};
 
@@ -25,6 +25,7 @@ const ATTESTATIONS: &str = "/v0/attestations";
 const REGISTRATIONS: &str = "/v0/rule-registrations";
 const RULE_SETS: &str = "/v0/rule-set-registrations";
 const RELEASES: &str = "/v0/facts/releases";
+const DEPLOYMENTS: &str = "/v0/facts/deployments";
 const TARGETS: &str = "/v0/target-registrations";
 const INVALID: &str = "invalid.jwt.fixture";
 
@@ -162,7 +163,7 @@ async fn ledger_endpoint() -> (Server, LedgerRequests) {
         Json(json!({"outcomes": outcomes}))
     }
 
-    async fn release(
+    async fn record_fact(
         State(records): State<LedgerRequests>,
         headers: HeaderMap,
         Json(body): Json<Value>,
@@ -193,7 +194,8 @@ async fn ledger_endpoint() -> (Server, LedgerRequests) {
         .route(ATTESTATIONS, post(attest))
         .route(REGISTRATIONS, post(register))
         .route(RULE_SETS, post(register))
-        .route(RELEASES, post(release))
+        .route(RELEASES, post(record_fact))
+        .route(DEPLOYMENTS, post(record_fact))
         .route(TARGETS, post(register_targets))
         .with_state(requests.clone());
     (Server::start(router).await, requests)
@@ -396,7 +398,7 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
     let (endpoint, key_requests) = key_endpoint(&fixture).await;
     let (ledger, requests) = ledger_endpoint().await;
     let oidc = verifier("example/*", format!("{}/jwks", endpoint.url));
-    let gateway = gateway(oidc, &ledger.url, 5, Duration::from_secs(2)).await;
+    let gateway = gateway(oidc, &ledger.url, 6, Duration::from_secs(2)).await;
 
     let token = fixture.token("Example/Project");
     submit(
@@ -434,6 +436,16 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
     .await;
     let targets = json!({"targets": [{"name": "staging"}]});
     submit(&gateway, TARGETS, &token, targets, StatusCode::OK).await;
+    let subject = "git.example.org/software/service";
+    let deployment = json!({"target": "staging", "repository": subject, "version": "v1"});
+    submit(
+        &gateway,
+        DEPLOYMENTS,
+        &token,
+        deployment,
+        StatusCode::CREATED,
+    )
+    .await;
     let token = fixture.token("example/project");
     let headers = submit(
         &gateway,
@@ -478,7 +490,7 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
     .await;
 
     let records = requests.lock().unwrap();
-    assert_eq!(records.len(), 8);
+    assert_eq!(records.len(), 9);
     assert_eq!(records[0]["sender"], REPOSITORY);
     assert_eq!(records[1]["sender"], REPOSITORY);
     assert_eq!(records[1]["rules"][0]["source"], REPOSITORY);
@@ -498,9 +510,19 @@ async fn forwards_owned_ingest_and_shares_only_the_repository_rate_allowance() {
         records[4],
         json!({"sender": REPOSITORY, "targets": [{"name": "staging"}]})
     );
-    assert_eq!(records[5]["sender"], other);
-    assert_eq!(records[6]["sender"], "fixture");
+    assert_eq!(
+        records[5],
+        json!({
+            "target": "staging",
+            "repository": subject,
+            "version": "v1",
+            "sender": REPOSITORY,
+            "auth_method": "github_oidc"
+        })
+    );
+    assert_eq!(records[6]["sender"], other);
     assert_eq!(records[7]["sender"], "fixture");
+    assert_eq!(records[8]["sender"], "fixture");
     assert_eq!(key_requests.lock().unwrap().requests, 1);
 }
 

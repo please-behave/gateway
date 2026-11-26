@@ -15,7 +15,6 @@ use crate::{Config, parse_ledger_url};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RECEIPT_BYTES: usize = 1024;
 pub(crate) const MAX_LEDGER_BODY_BYTES: usize = 2 * 1024 * 1024;
-pub(crate) const RELEASE_PATH: &str = "/v0/facts/releases";
 
 pub(crate) struct Ledger {
     client: Client,
@@ -143,27 +142,34 @@ impl Receipt for AttestationReceipt {
     }
 }
 
-pub(crate) struct ReleaseReceipt;
+#[derive(Clone, Copy)]
+pub(crate) enum FactReceipt {
+    Release,
+    Deployment,
+}
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct ReleaseOutcome {
-    outcome: ReleaseOutcomeKind,
+struct FactOutcome {
+    outcome: FactOutcomeKind,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ReleaseOutcomeKind {
+enum FactOutcomeKind {
     Created,
     Unchanged,
     Conflict,
 }
 
-impl Receipt for ReleaseReceipt {
-    const INVALID_MESSAGE: &'static str = "invalid ledger release receipt";
+impl Receipt for FactReceipt {
+    const INVALID_MESSAGE: &'static str = "invalid ledger fact receipt";
 
     fn path(&self) -> &'static str {
-        RELEASE_PATH
+        match self {
+            Self::Release => "/v0/facts/releases",
+            Self::Deployment => "/v0/facts/deployments",
+        }
     }
 
     fn max_bytes(&self) -> usize {
@@ -171,18 +177,22 @@ impl Receipt for ReleaseReceipt {
     }
 
     fn accepts_status(&self, status: StatusCode) -> bool {
-        matches!(
-            status,
-            StatusCode::CREATED | StatusCode::OK | StatusCode::CONFLICT
-        )
+        matches!(status, StatusCode::CREATED | StatusCode::OK)
+            || match self {
+                Self::Release => status == StatusCode::CONFLICT,
+                Self::Deployment => status == StatusCode::BAD_REQUEST,
+            }
     }
 
     fn decode(self, status: StatusCode, body: &[u8]) -> Option<Response> {
-        let receipt: ReleaseOutcome = serde_json::from_slice(body).ok()?;
+        if status == StatusCode::BAD_REQUEST {
+            return body.is_empty().then(|| status.into_response());
+        }
+        let receipt: FactOutcome = serde_json::from_slice(body).ok()?;
         let expected = match receipt.outcome {
-            ReleaseOutcomeKind::Created => StatusCode::CREATED,
-            ReleaseOutcomeKind::Unchanged => StatusCode::OK,
-            ReleaseOutcomeKind::Conflict => StatusCode::CONFLICT,
+            FactOutcomeKind::Created => StatusCode::CREATED,
+            FactOutcomeKind::Unchanged => StatusCode::OK,
+            FactOutcomeKind::Conflict => StatusCode::CONFLICT,
         };
         (status == expected).then(|| (status, Json(receipt)).into_response())
     }
