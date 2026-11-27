@@ -1,5 +1,6 @@
 id: REQ-0018
 name: Forward deployment facts and report ledger outcomes
+area: deployments
 description: >-
   The gateway must forward each valid deployment fact once with the authenticated
   sender and authentication method. It must relay the ledger's recorded,

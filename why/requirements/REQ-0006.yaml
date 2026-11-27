@@ -1,5 +1,6 @@
 id: REQ-0006
 name: Apply an independent ingest rate limit to each authenticated identity
+area: authentication
 description: >-
   Each gateway instance must apply a configurable in-memory rate limit shared
   across all public ingest endpoints. Track each API key and each normalized

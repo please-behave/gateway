@@ -1,5 +1,6 @@
 id: REQ-0010
 name: Bound the ledger exchange
+area: operations
 description: >-
   The gateway must limit connection establishment to five seconds or the
   configured request timeout, whichever is shorter. The configured request

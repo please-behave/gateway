@@ -1,5 +1,6 @@
 id: REQ-0005
 name: Authenticate and rotate sender credentials
+area: authentication
 description: >-
   The gateway must authenticate the bearer key against configured hashes using
   constant-time comparison, derive the sender from the matching label and

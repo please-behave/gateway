@@ -1,5 +1,6 @@
 id: REQ-0014
 name: Accept, forward and report release facts
+area: releases
 description: >-
   The gateway must validate a public release fact against the ingest contract,
   including a full Git object ID, and forward it once with the authenticated

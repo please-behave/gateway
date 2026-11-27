@@ -1,5 +1,6 @@
 id: REQ-0011
 name: Validate public rule and Rule Set registration batches
+area: registry
 description: >-
   The gateway must authenticate and rate-limit rule and Rule Set registration requests
   before reading the body, using the same credentials and per-identity allowance as

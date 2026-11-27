@@ -1,5 +1,6 @@
 id: REQ-0004
 name: Refuse unsupported requests
+area: operations
 description: The gateway must reject every path and HTTP method that it does not support with the applicable HTTP not-found or method-not-allowed response.
 rationale: Explicitly refusing unsupported traffic keeps the sender boundary predictable and limits its exposed surface.
 decisions:

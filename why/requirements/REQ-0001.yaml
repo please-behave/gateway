@@ -1,5 +1,6 @@
 id: REQ-0001
 name: Health and readiness reporting
+area: operations
 description: The gateway must provide liveness and readiness endpoints, and readiness must report valid loaded configuration without depending on ledger reachability.
 rationale: Instances need to remain in rotation when the gateway itself is ready even if the ledger is temporarily unavailable.
 decisions:

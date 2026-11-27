@@ -1,5 +1,6 @@
 id: REQ-0013
 name: Authenticate and authorize GitHub OIDC senders
+area: authentication
 description: >-
   All public ingest endpoints must accept GitHub OIDC when configured through the
   environment. The gateway must compare repository names case-insensitively

@@ -1,0 +1,40 @@
+id: COMP-0005
+name: Ledger Exchange
+purpose: >-
+  Delivers admitted submissions to the ledger and turns its answers into
+  responses for the sender.
+scope:
+  - >-
+    Sends one JSON request to the configured ledger endpoint without retrying
+    or following redirects.
+  - >-
+    Bounds connection establishment and the whole exchange, including the
+    reading of the receipt.
+  - >-
+    Validates the ledger's receipt before relaying it.
+  - >-
+    Maps ledger failures to 503, 504 and 502 and logs 502 failures without the
+    document or the ledger response body.
+out_of_scope:
+  - description: Building the submission and deciding what is forwarded.
+    owner: COMP-0002
+  - description: Validating registration outcomes.
+    owner: COMP-0004
+must_not:
+  - >-
+    Retry a request or follow a redirect.
+  - >-
+    Log a submitted document or a ledger response body.
+  - >-
+    Persist anything it sends or receives.
+files:
+  - src/ledger.rs
+depends_on: []
+requirements:
+  - REQ-0008
+  - REQ-0009
+  - REQ-0010
+  - REQ-0012
+  - REQ-0014
+  - REQ-0016
+  - REQ-0018

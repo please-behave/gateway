@@ -1,0 +1,42 @@
+id: COMP-0001
+name: Gateway Service
+purpose: >-
+  Starts the gateway process, loads its configuration and applies the limits
+  and observability common to every request.
+scope:
+  - >-
+    Reads the process configuration and refuses to start when it is invalid.
+  - >-
+    Serves the liveness and readiness endpoints and refuses every unsupported
+    path and method.
+  - >-
+    Applies the configured request body size and request time bounds.
+  - >-
+    Emits structured request logs with a request identifier and shuts the
+    process down gracefully.
+  - >-
+    Provides the command line entry points that serve requests and generate an
+    API key.
+out_of_scope:
+  - description: Authenticating senders and rate-limiting them.
+    owner: COMP-0002
+  - description: Exchanging attestations and registrations with the ledger.
+    owner: COMP-0005
+must_not:
+  - >-
+    Log an authorization header or any credential.
+  - >-
+    Make readiness depend on the reachability of the ledger.
+  - >-
+    Read a client address or rely on a forwarded header.
+files:
+  - src/lib.rs
+  - src/main.rs
+depends_on:
+  - COMP-0002
+requirements:
+  - REQ-0001
+  - REQ-0002
+  - REQ-0003
+  - REQ-0004
+  - REQ-0010

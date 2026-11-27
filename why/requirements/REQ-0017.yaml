@@ -1,5 +1,6 @@
 id: REQ-0017
 name: Validate public deployment facts
+area: deployments
 description: >-
   The gateway must validate each public deployment fact against its ingest
   schema and reject duplicate JSON keys. A report identifies a target name

@@ -1,0 +1,35 @@
+id: COMP-0003
+name: GitHub OIDC Authentication
+purpose: >-
+  Authenticates GitHub Actions workflows by their OIDC token and authorizes
+  their repository.
+scope:
+  - >-
+    Reads the GitHub OIDC configuration from the environment and rejects an
+    invalid one at startup.
+  - >-
+    Verifies the signature, issuer, audience and validity period of a token
+    against GitHub's signing keys.
+  - >-
+    Caches the signing keys in the memory of one instance.
+  - >-
+    Compares the token's repository case-insensitively with the configured
+    allowlist of repositories and organizations.
+out_of_scope:
+  - description: Authenticating API keys.
+    owner: COMP-0002
+  - description: Rate-limiting authenticated identities.
+    owner: COMP-0002
+must_not:
+  - >-
+    Share the signing-key cache between instances or persist it.
+  - >-
+    Accept a token that fails any verification step.
+  - >-
+    Log a token.
+files:
+  - src/github_oidc.rs
+depends_on: []
+requirements:
+  - REQ-0006
+  - REQ-0013

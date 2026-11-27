@@ -1,5 +1,6 @@
 id: REQ-0015
 name: Validate public deployment target registrations
+area: deployments
 description: >-
   The gateway must authenticate and apply the shared public ingest allowance
   before validating the entire deployment target batch against the ingest

@@ -1,5 +1,6 @@
 id: REQ-0012
 name: Forward rule and Rule Set registrations and report ledger outcomes
+area: registry
 description: >-
   The gateway must submit a validated registration batch once, with its
   registering commit and the authenticated sender, to the

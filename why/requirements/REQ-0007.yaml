@@ -1,5 +1,6 @@
 id: REQ-0007
 name: Accept bounded attestations through the public ingest contract
+area: attestations
 description: >-
   The gateway must authenticate, rate-limit, then check the request body size
   and validate structure against the versioned public ingest contract. It must

@@ -1,5 +1,6 @@
 id: REQ-0008
 name: Forward validated attestations with authenticated attribution
+area: attestations
 description: >-
   After admitting and validating a request, the gateway must convert the
   attestation to the canonical ledger format and send one JSON envelope with

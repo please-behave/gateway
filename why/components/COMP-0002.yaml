@@ -1,0 +1,63 @@
+id: COMP-0002
+name: Public Ingest
+purpose: >-
+  Admits authenticated, rate-limited and structurally valid submissions on the
+  public ingest endpoints and forwards them to the ledger.
+scope:
+  - >-
+    Authenticates each bearer credential against configured API key hashes with
+    constant-time comparison and derives the sender from the matching label.
+  - >-
+    Generates a random API key and its configuration entry without persisting
+    anything.
+  - >-
+    Applies an independent in-memory rate limit to each authenticated identity
+    across all ingest endpoints before reading a body.
+  - >-
+    Validates attestations, release facts and deployment facts against their
+    ingest contract schemas and rejects duplicate keys and client-supplied
+    attribution.
+  - >-
+    Converts a valid attestation to the canonical ledger format and forwards
+    every valid submission once with the authenticated sender.
+  - >-
+    Maps each rejection to its HTTP status code.
+out_of_scope:
+  - description: Verifying GitHub OIDC tokens and authorizing repositories.
+    owner: COMP-0003
+  - description: Validating registration batches.
+    owner: COMP-0004
+  - description: Sending requests to the ledger and validating its responses.
+    owner: COMP-0005
+  - description: Process startup, request logging and request-wide limits.
+    owner: COMP-0001
+must_not:
+  - >-
+    Forward a sender, owner or authentication method that the client supplied.
+  - >-
+    Persist, retry or forward a rejected submission.
+  - >-
+    Keep an API key in plain text or compare one in variable time.
+  - >-
+    Log a credential or a submitted document.
+files:
+  - src/ingest.rs
+  - why/contracts/ingest/attestation.schema.json
+  - why/contracts/ingest/release-fact.schema.json
+  - why/contracts/ingest/deployment-fact.schema.json
+depends_on:
+  - COMP-0003
+  - COMP-0004
+  - COMP-0005
+requirements:
+  - REQ-0005
+  - REQ-0006
+  - REQ-0007
+  - REQ-0008
+  - REQ-0011
+  - REQ-0012
+  - REQ-0014
+  - REQ-0015
+  - REQ-0016
+  - REQ-0017
+  - REQ-0018
